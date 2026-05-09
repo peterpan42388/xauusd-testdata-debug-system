@@ -1,5 +1,7 @@
 # XAUUSD Local K-Line Debug System
 
+🌐 语言 / Language: **简体中文** | [English](README.en.md)
+
 本项目是一个本地策略调试平台：  
 可视化回放 K 线、切换回测引擎、查看行为流、写评论、做统计复盘。
 
@@ -23,12 +25,33 @@
 
 ## 30 秒快速开始
 
+### macOS / Linux
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install pandas
 cd debug_system
 python3 server.py
+```
+
+浏览器打开：`http://127.0.0.1:8765/`
+
+### Windows (PowerShell)
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install pandas
+cd debug_system
+py server.py
+```
+
+### Windows (CMD)
+```cmd
+py -m venv .venv
+.venv\Scripts\activate.bat
+pip install pandas
+cd debug_system
+py server.py
 ```
 
 浏览器打开：`http://127.0.0.1:8765/`
