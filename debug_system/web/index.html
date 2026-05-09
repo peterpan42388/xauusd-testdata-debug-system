@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XAUUSD 本地K线调试系统</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>XAUUSD 本地K线调试系统</h1>
+    <div class="toolbar">
+      <span id="dataMeta">加载中...</span>
+      <select id="engineFile" class="mini"></select>
+      <button id="switchEngineBtn" class="mini">切换引擎并刷新</button>
+      <select id="datasetBucket" class="mini">
+        <option value="year">年</option>
+        <option value="month">月</option>
+        <option value="week">周</option>
+        <option value="day">日</option>
+      </select>
+      <select id="datasetFile" class="mini"></select>
+      <button id="switchDatasetBtn" class="mini">切换并刷新</button>
+      <button id="modeBarBtn" class="mini active">单K评论</button>
+      <button id="modeRangeBtn" class="mini">区间评论</button>
+      <button id="submitPendingTop" class="mini primary">提交评论(0)</button>
+      <button id="clearCommentsBtn" class="mini">清空评论</button>
+      <a href="/api/comments.csv" target="_blank">导出CSV</a>
+    </div>
+  </header>
+
+  <main>
+    <section id="chartPanel">
+      <div id="chartViewport">
+        <div id="chartWrap">
+          <div id="chart"></div>
+        </div>
+        <div id="centerCrosshair" aria-hidden="true">
+          <div class="center-line-v"></div>
+          <div class="center-line-h"></div>
+          <div class="center-dot"></div>
+          <div class="center-tag-x">center_X</div>
+          <div class="center-tag-y">center_Y</div>
+        </div>
+      </div>
+      <div id="miniWrap">
+        <div id="miniChart"></div>
+      </div>
+      <div id="hint">提示：单K模式点击K线弹窗评论；区间模式连续点击两根K线后弹窗评论。</div>
+    </section>
+
+    <aside id="sidePanel">
+      <div class="card">
+        <h3>当前选中</h3>
+        <pre id="selectedInfo">未选择</pre>
+      </div>
+
+      <div class="card">
+        <h3>行为列表（脚本流程）</h3>
+        <div class="flowToolbar">
+          <button id="flowOpsBtn" class="mini active">仅操作</button>
+          <button id="flowAllBtn" class="mini">全部显示</button>
+        </div>
+        <div id="flowList" class="logList"></div>
+      </div>
+    </aside>
+  </main>
+
+  <section id="statsPanel" class="card">
+    <h3>测试统计视图（初始资金 1000）</h3>
+    <div id="statsGrid" class="statsGrid"></div>
+    <div id="statsHint" class="statsHint"></div>
+  </section>
+
+  <dialog id="commentModal">
+    <form method="dialog" id="commentForm">
+      <h3 id="modalTitle">添加评论</h3>
+      <pre id="modalTarget"></pre>
+      <label>类型</label>
+      <select id="kind">
+        <option value="entry">entry 入场</option>
+        <option value="exit">exit 出场</option>
+        <option value="bug">bug 问题</option>
+        <option value="opt">opt 优化点</option>
+        <option value="obs">obs 观察</option>
+      </select>
+      <label>标签（可选）</label>
+      <input id="tag" placeholder="如 STRUCT_DOWN / X_GOLD / STOP" />
+      <label>评论</label>
+      <textarea id="comment" rows="4" placeholder="写下你对这根K线/区间的观察"></textarea>
+      <div class="actions">
+        <button type="button" id="cancelBtn">取消</button>
+        <button type="button" id="saveBtn">保存到待提交</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

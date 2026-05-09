@@ -1,0 +1,12 @@
+# runtime
+*.pid
+*.log
+__pycache__/
+*.pyc
+.DS_Store
+
+# strategy source (do not publish)
+*.mq5
+
+# local temp
+debug_system/logs/*.jsonl
