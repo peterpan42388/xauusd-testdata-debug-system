@@ -7,6 +7,7 @@ __pycache__/
 
 # strategy source (do not publish)
 *.mq5
+*.MQ5
 
 # local temp
 debug_system/logs/*.jsonl
