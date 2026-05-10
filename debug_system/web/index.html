@@ -11,17 +11,20 @@
   <header>
     <h1>XAUUSD 本地K线调试系统</h1>
     <div class="toolbar">
-      <span id="dataMeta">加载中...</span>
-      <select id="engineFile" class="mini"></select>
-      <button id="switchEngineBtn" class="mini">切换引擎并刷新</button>
-      <select id="datasetBucket" class="mini">
+      <span id="dataMeta" style="display:none;"></span>
+      <div class="engineGroup">
+        <button id="openCommonConfigBtn" class="mini">公共配置</button>
+        <select id="engineFile" class="mini compactSelect"></select>
+      </div>
+      <button id="switchEngineBtn" class="mini">切换引擎</button>
+      <select id="datasetBucket" class="mini compactSelect narrowSelect">
         <option value="year">年</option>
         <option value="month">月</option>
         <option value="week">周</option>
         <option value="day">日</option>
       </select>
-      <select id="datasetFile" class="mini"></select>
-      <button id="switchDatasetBtn" class="mini">切换并刷新</button>
+      <select id="datasetFile" class="mini compactSelect narrowSelect"></select>
+      <button id="switchDatasetBtn" class="mini">刷新</button>
       <button id="modeBarBtn" class="mini active">单K评论</button>
       <button id="modeRangeBtn" class="mini">区间评论</button>
       <button id="submitPendingTop" class="mini primary">提交评论(0)</button>
@@ -71,7 +74,50 @@
     <h3>测试统计视图（初始资金 1000）</h3>
     <div id="statsGrid" class="statsGrid"></div>
     <div id="statsHint" class="statsHint"></div>
+    <div class="tradeExplorer">
+      <div class="pnlCard">
+        <h4>交易筛选与统计</h4>
+        <div class="filterRow">
+          <label>开始日</label>
+          <input id="tradeDateFrom" type="date" />
+          <label>结束日</label>
+          <input id="tradeDateTo" type="date" />
+          <button id="applyTradeRangeBtn" class="mini">应用区间</button>
+          <button id="resetTradeRangeBtn" class="mini">重置</button>
+        </div>
+        <div id="tradeSummaryGrid" class="statsGrid"></div>
+      </div>
+
+      <div class="tradeSplit">
+        <div class="pnlCard">
+          <h4>日期列表（按天）</h4>
+          <div id="dailyListTable"></div>
+        </div>
+        <div class="pnlCard">
+          <h4 id="tradeListTitle">交易明细</h4>
+          <div id="tradeListTable"></div>
+        </div>
+      </div>
+    </div>
   </section>
+
+  <dialog id="commonConfigModal">
+    <form method="dialog" id="commonConfigForm">
+      <h3>公共配置（回测参数）</h3>
+      <pre id="commonConfigPath"></pre>
+      <label>启用每日最高止损金额</label>
+      <select id="cfgDailyLossEnabled">
+        <option value="true">启用</option>
+        <option value="false">关闭</option>
+      </select>
+      <label>每日最高止损金额</label>
+      <input id="cfgDailyLossAmount" type="number" min="0" step="1" />
+      <div class="actions">
+        <button type="button" id="commonConfigCancelBtn">取消</button>
+        <button type="button" id="commonConfigSaveBtn">保存配置</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="commentModal">
     <form method="dialog" id="commentForm">

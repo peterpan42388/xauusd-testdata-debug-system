@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 from datetime import datetime
 from uuid import uuid4
+from collections import defaultdict
 import sys
 import importlib.util
 import pandas as pd
@@ -18,10 +19,74 @@ CURRENT_ENGINE_FILE = BASE / 'data' / 'current_engine.json'
 DATA_ROOT = BASE.parent
 DRIVER_DIR = DATA_ROOT / 'driver'
 BOLLINGER_DEVIATION = 2.0
+COMMON_PARAMS_FILE = DRIVER_DIR / 'config' / 'common_params.json'
+DEFAULT_COMMON_PARAMS = {
+    'daily_max_loss_enabled': True,
+    'daily_max_loss_amount': 300.0,
+}
 
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 if not LOG_FILE.exists():
     LOG_FILE.touch()
+
+
+def ensure_common_params():
+    COMMON_PARAMS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not COMMON_PARAMS_FILE.exists():
+        COMMON_PARAMS_FILE.write_text(json.dumps(DEFAULT_COMMON_PARAMS, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def read_common_params():
+    ensure_common_params()
+    cfg = read_json(COMMON_PARAMS_FILE, {}) or {}
+    out = dict(DEFAULT_COMMON_PARAMS)
+    out.update(cfg)
+    try:
+        out['daily_max_loss_amount'] = float(out.get('daily_max_loss_amount', DEFAULT_COMMON_PARAMS['daily_max_loss_amount']))
+    except Exception:
+        out['daily_max_loss_amount'] = DEFAULT_COMMON_PARAMS['daily_max_loss_amount']
+    out['daily_max_loss_enabled'] = bool(out.get('daily_max_loss_enabled', DEFAULT_COMMON_PARAMS['daily_max_loss_enabled']))
+    return out
+
+
+def write_common_params(payload: dict):
+    cur = read_common_params()
+    if 'daily_max_loss_enabled' in payload:
+        cur['daily_max_loss_enabled'] = bool(payload.get('daily_max_loss_enabled'))
+    if 'daily_max_loss_amount' in payload:
+        try:
+            cur['daily_max_loss_amount'] = max(0.0, float(payload.get('daily_max_loss_amount')))
+        except Exception:
+            pass
+    COMMON_PARAMS_FILE.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding='utf-8')
+    return cur
+
+
+def apply_common_limits_to_result(res: dict, common_params: dict):
+    daily_enabled = bool(common_params.get('daily_max_loss_enabled', False))
+    daily_limit = float(common_params.get('daily_max_loss_amount', 0.0) or 0.0)
+    if (not daily_enabled) or daily_limit <= 0:
+        return res
+
+    filtered = []
+    day_pnl = defaultdict(float)
+    blocked_days = set()
+    blocked_count = 0
+    for t in res.get('trades', []):
+        exit_dt = pd.to_datetime(t.get('exit_time'))
+        day_key = exit_dt.strftime('%Y-%m-%d')
+        if day_key in blocked_days:
+            blocked_count += 1
+            continue
+        pnl = float(t.get('pnl', 0.0))
+        filtered.append(t)
+        day_pnl[day_key] += pnl
+        if day_pnl[day_key] <= -daily_limit:
+            blocked_days.add(day_key)
+
+    res['trades'] = filtered
+    res['blocked_by_daily_loss'] = blocked_count
+    return res
 
 
 def read_json(path: Path, fallback):
@@ -56,7 +121,7 @@ def list_engine_files():
     if not DRIVER_DIR.exists():
         return []
     mq5 = sorted([p.name for p in DRIVER_DIR.glob('*.mq5')])
-    py_backtests = sorted([p.name for p in DRIVER_DIR.glob('run_survival_v*_backtest.py')])
+    py_backtests = sorted([p.name for p in DRIVER_DIR.glob('run_*_backtest.py')])
     # 优先展示/使用mq5；若仓库不带mq5，回退到py backtest引擎
     return mq5 if mq5 else py_backtests
 
@@ -122,6 +187,20 @@ def resolve_engine_backtest_module(engine_file_name: str):
         candidates.extend([DRIVER_DIR / engine_file_name, DATA_ROOT / engine_file_name])
     else:
         stem = Path(engine_file_name).stem
+        lower_stem = stem.lower()
+        # v10 orchestrator special mapping
+        if 'orchestrator_v10_localtest' in lower_stem:
+            candidates.extend([
+                DRIVER_DIR / 'run_v10_localtest_backtest.py',
+                DATA_ROOT / 'run_v10_localtest_backtest.py',
+                DRIVER_DIR / 'run_orchestrator_v10_backtest.py',
+                DATA_ROOT / 'run_orchestrator_v10_backtest.py',
+            ])
+        elif 'orchestrator_v10' in lower_stem:
+            candidates.extend([
+                DRIVER_DIR / 'run_orchestrator_v10_backtest.py',
+                DATA_ROOT / 'run_orchestrator_v10_backtest.py',
+            ])
         candidate_name = stem.replace('XAUUSD_Survival', 'run_survival').lower() + '_backtest.py'
         candidates.extend([DRIVER_DIR / candidate_name, DATA_ROOT / candidate_name])
 
@@ -139,6 +218,12 @@ def resolve_engine_backtest_module(engine_file_name: str):
             break
     if module_path is None:
         raise FileNotFoundError('No backtest module found in driver/TestData.')
+
+    # Ensure driver/data roots are importable for backtest modules that import each other,
+    # e.g. run_survival_v5_backtest -> import run_survival_v7_backtest as base
+    for _p in (str(DRIVER_DIR), str(DATA_ROOT)):
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
 
     spec = importlib.util.spec_from_file_location(f'backtest_{module_path.stem}', str(module_path))
     if spec is None or spec.loader is None:
@@ -271,10 +356,42 @@ def resolve_dataset_source(bucket: str, file_name: str):
     return src
 
 
-def build_ohlc_payload(df: pd.DataFrame, source_file: Path, engine_file: str, engine_module_path: Path):
+def resolve_existing_dataset_selection():
+    """
+    返回一个当前可用的数据选择 (bucket, file)。
+    若current_dataset已失效，则自动回退到可用文件（优先week）。
+    """
+    b, f = resolve_current_dataset_selection()
+    if b and f:
+        try:
+            resolve_dataset_source(b, f)
+            return b, f
+        except Exception:
+            pass
+
+    cat = get_dataset_catalog()
+    prefer_order = ['week', 'day', 'month', 'year']
+    for bucket in prefer_order:
+        files = cat.get(bucket, [])
+        if files:
+            return bucket, files[-1]
+    return None, None
+
+
+def build_ohlc_payload(df: pd.DataFrame, source_file: Path, engine_file: str, engine_module_path: Path, build_id: str):
     generated_at = datetime.now().isoformat(timespec='milliseconds')
     rows = []
+    def _pick(row, a: str, b: str | None = None):
+        if a in row.index:
+            return row[a]
+        if b and b in row.index:
+            return row[b]
+        raise KeyError(a)
+
     for _, r in df.iterrows():
+        bb_mid = _pick(r, 'mid', 'bb_mid')
+        bb_up = _pick(r, 'up', 'bb_up')
+        bb_down = _pick(r, 'down', 'bb_down')
         rows.append({
             'time': r['time'].strftime('%Y-%m-%dT%H:%M:%S'),
             'open': float(r['open']),
@@ -285,14 +402,15 @@ def build_ohlc_payload(df: pd.DataFrame, source_file: Path, engine_file: str, en
             'spread': float(r.get('spread', 0.0)),
             'ema5': (None if pd.isna(r['ema5']) else float(r['ema5'])),
             'ema20': (None if pd.isna(r['ema20']) else float(r['ema20'])),
-            'bb_mid': (None if pd.isna(r['mid']) else float(r['mid'])),
-            'bb_up': (None if pd.isna(r['up']) else float(r['up'])),
-            'bb_down': (None if pd.isna(r['down']) else float(r['down'])),
+            'bb_mid': (None if pd.isna(bb_mid) else float(bb_mid)),
+            'bb_up': (None if pd.isna(bb_up) else float(bb_up)),
+            'bb_down': (None if pd.isna(bb_down) else float(bb_down)),
         })
 
     return {
         'symbol': 'XAUUSD',
         'timeframe': 'M5',
+        'build_id': build_id,
         'bollinger_deviation': BOLLINGER_DEVIATION,
         'source_file': str(source_file),
         'engine_file': engine_file,
@@ -304,11 +422,23 @@ def build_ohlc_payload(df: pd.DataFrame, source_file: Path, engine_file: str, en
     }
 
 
-def build_trades_payload(df: pd.DataFrame, source_file: Path, engine_file: str, engine_module_path: Path, run_backtest_func):
+def build_trades_payload(
+    df: pd.DataFrame,
+    source_file: Path,
+    engine_file: str,
+    engine_module_path: Path,
+    run_backtest_func,
+    build_id: str,
+    common_params: dict,
+):
     generated_at = datetime.now().isoformat(timespec='milliseconds')
-    res = run_backtest_func(df)
+    try:
+        res = run_backtest_func(df, common_params)
+    except TypeError:
+        res = run_backtest_func(df)
+    res = apply_common_limits_to_result(res, common_params)
     trades = []
-    for i, t in enumerate(res['trades']):
+    for i, t in enumerate(res.get('trades', [])):
         trades.append({
             'id': i + 1,
             'entry_time': pd.to_datetime(t['entry_time']).strftime('%Y-%m-%dT%H:%M:%S'),
@@ -320,8 +450,61 @@ def build_trades_payload(df: pd.DataFrame, source_file: Path, engine_file: str, 
             'reason': str(t['reason']),
         })
 
+    wins = sum(1 for t in trades if float(t['pnl']) > 0)
+    losses = len(trades) - wins
+    net_pnl = sum(float(t['pnl']) for t in trades)
+    win_rate = (wins / len(trades) * 100.0) if trades else 0.0
+    initial_balance = 1000.0
+    running = initial_balance
+    peak = running
+    max_dd_pct = 0.0
+    for t in trades:
+        running += float(t['pnl'])
+        peak = max(peak, running)
+        if peak > 0:
+            dd = (peak - running) / peak * 100.0
+            max_dd_pct = max(max_dd_pct, dd)
+    final_balance = initial_balance + net_pnl
+
+    trade_pnl_list = []
+    day_map = defaultdict(lambda: {'date': '', 'trades': 0, 'wins': 0, 'losses': 0, 'net_pnl': 0.0})
+    for t in trades:
+        exit_dt = pd.to_datetime(t['exit_time'])
+        day_key = exit_dt.strftime('%Y-%m-%d')
+        pnl = float(t['pnl'])
+        trade_pnl_list.append({
+            'id': int(t['id']),
+            'date': day_key,
+            'entry_time': t['entry_time'],
+            'exit_time': t['exit_time'],
+            'side': t['side'],
+            'pnl': pnl,
+            'reason': t['reason'],
+        })
+        row = day_map[day_key]
+        row['date'] = day_key
+        row['trades'] += 1
+        row['wins'] += (1 if pnl > 0 else 0)
+        row['losses'] += (1 if pnl <= 0 else 0)
+        row['net_pnl'] += pnl
+
+    daily_pnl_list = []
+    balance = initial_balance
+    for day_key in sorted(day_map.keys()):
+        row = day_map[day_key]
+        balance += row['net_pnl']
+        daily_pnl_list.append({
+            'date': row['date'],
+            'trades': int(row['trades']),
+            'wins': int(row['wins']),
+            'losses': int(row['losses']),
+            'net_pnl': float(row['net_pnl']),
+            'balance': float(balance),
+        })
+
     return {
         'summary': {
+            'build_id': build_id,
             'bars': int(res['bars']),
             'start': str(res['start']),
             'end': str(res['end']),
@@ -330,17 +513,21 @@ def build_trades_payload(df: pd.DataFrame, source_file: Path, engine_file: str, 
             'engine_module': str(engine_module_path),
             'generated_at': generated_at,
             'filter_start': None,
-            'signals': res['signals'],
-            'gate_pass': res['gate_pass'],
+            'signals': res.get('signals', {}),
+            'gate_pass': res.get('gate_pass', {}),
             'trades': len(trades),
-            'wins': int(res['wins']),
-            'losses': int(res['losses']),
-            'win_rate': float(res['win_rate']),
-            'net_pnl': float(res['net_pnl']),
-            'final_balance': float(res['final_balance']),
-            'max_dd_pct': float(res['max_dd_pct']),
+            'wins': int(wins),
+            'losses': int(losses),
+            'win_rate': float(win_rate),
+            'net_pnl': float(net_pnl),
+            'final_balance': float(final_balance),
+            'max_dd_pct': float(max_dd_pct),
+            'blocked_by_daily_loss': int(res.get('blocked_by_daily_loss', 0)),
+            'common_params': common_params,
         },
         'trades': trades,
+        'trade_pnl_list': trade_pnl_list,
+        'daily_pnl_list': daily_pnl_list,
     }
 
 
@@ -349,16 +536,33 @@ def rebuild_dataset(bucket: str, file_name: str, engine_file_name: str | None = 
     if not engine_name:
         raise RuntimeError('No engine selected.')
     engine_mod, engine_module_path = resolve_engine_backtest_module(engine_name)
+    common_params = read_common_params()
 
+    build_id = uuid4().hex[:12]
     src = resolve_dataset_source(bucket, file_name)
     df = engine_mod.parse_data(src)
     if df.empty:
         raise RuntimeError(f'empty source: {src}')
     df = engine_mod.indicators(df)
+    # 指标列兼容：支持 mid/up/down 与 bb_mid/bb_up/bb_down 双命名。
+    if 'mid' not in df.columns and 'bb_mid' in df.columns:
+        df['mid'] = df['bb_mid']
+    if 'up' not in df.columns and 'bb_up' in df.columns:
+        df['up'] = df['bb_up']
+    if 'down' not in df.columns and 'bb_down' in df.columns:
+        df['down'] = df['bb_down']
+    if 'bb_mid' not in df.columns and 'mid' in df.columns:
+        df['bb_mid'] = df['mid']
+    if 'bb_up' not in df.columns and 'up' in df.columns:
+        df['bb_up'] = df['up']
+    if 'bb_down' not in df.columns and 'down' in df.columns:
+        df['bb_down'] = df['down']
     df['spread'] = 0.0
 
-    ohlc_payload = build_ohlc_payload(df, src, engine_name, engine_module_path)
-    trades_payload = build_trades_payload(df, src, engine_name, engine_module_path, engine_mod.run_backtest)
+    ohlc_payload = build_ohlc_payload(df, src, engine_name, engine_module_path, build_id)
+    trades_payload = build_trades_payload(
+        df, src, engine_name, engine_module_path, engine_mod.run_backtest, build_id, common_params
+    )
 
     DATA_FILE.write_text(json.dumps(ohlc_payload, ensure_ascii=False), encoding='utf-8')
     TRADES_FILE.write_text(json.dumps(trades_payload, ensure_ascii=False), encoding='utf-8')
@@ -369,6 +573,7 @@ def rebuild_dataset(bucket: str, file_name: str, engine_file_name: str | None = 
         'file': file_name,
         'engine': engine_name,
         'source_file': str(src),
+        'build_id': build_id,
         'bars': ohlc_payload['count'],
         'trades': trades_payload['summary']['trades'],
     }
@@ -467,6 +672,14 @@ class Handler(SimpleHTTPRequestHandler):
                 'driver_dir': str(DRIVER_DIR),
             })
 
+        if path == '/api/common-params':
+            cfg = read_common_params()
+            return self._json({
+                'ok': True,
+                'file': str(COMMON_PARAMS_FILE),
+                'params': cfg,
+            })
+
         if path == '/api/datasets':
             cat = get_dataset_catalog()
             cur = current_dataset_meta()
@@ -553,7 +766,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not file_name:
                     raise ValueError('file is required')
                 meta = set_current_engine(file_name)
-                bucket, ds_file = resolve_current_dataset_selection()
+                bucket, ds_file = resolve_existing_dataset_selection()
                 rebuilt = None
                 if bucket and ds_file:
                     rebuilt = rebuild_dataset(bucket, ds_file, file_name)
@@ -573,10 +786,22 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({'ok': False, 'error': f'bad request: {e}'}, 400)
             return self._json({'ok': True, 'meta': meta}, 200)
 
+        if path == '/api/common-params':
+            try:
+                payload = self._read_json_body()
+                params = payload.get('params') if isinstance(payload, dict) else None
+                if not isinstance(params, dict):
+                    raise ValueError('params must be object')
+                cfg = write_common_params(params)
+            except Exception as e:
+                return self._json({'ok': False, 'error': f'bad request: {e}'}, 400)
+            return self._json({'ok': True, 'file': str(COMMON_PARAMS_FILE), 'params': cfg}, 200)
+
         return self._json({'ok': False, 'error': 'not found'}, 404)
 
 
 if __name__ == '__main__':
+    ensure_common_params()
     host, port = '127.0.0.1', 8765
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f'K-line debug system running at http://{host}:{port}')

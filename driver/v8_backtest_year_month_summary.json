@@ -1,0 +1,11 @@
+{
+  "batch": "year_month",
+  "files": 23,
+  "mean_final_balance": 1754.6904581135036,
+  "mean_net_pnl": 754.6904581135032,
+  "mean_win_rate": 33.86247603380494,
+  "mean_max_dd_pct": 32.96759787656948,
+  "mean_profit_factor": 1.0698932672496302,
+  "mean_add_count": 13.130434782608695,
+  "mean_multi_layer_ratio_pct": 1.7321937292239291
+}

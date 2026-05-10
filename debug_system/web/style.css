@@ -24,10 +24,15 @@ header {
   gap: 10px;
 }
 header h1 { margin: 0; font-size: 18px; }
-.toolbar { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+.toolbar { display: flex; align-items: center; gap: 10px; color: var(--muted); flex-wrap: wrap; }
 .toolbar a { color: var(--accent); text-decoration: none; }
 .toolbar select.mini {
   min-width: 92px;
+}
+.engineGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .mini {
   border: 1px solid var(--line);
@@ -38,6 +43,17 @@ header h1 { margin: 0; font-size: 18px; }
 }
 .mini.active { background: #334155; }
 .mini.primary { background: #0b3b5a; }
+.compactSelect {
+  width: 120px;
+  min-width: 120px !important;
+  max-width: 120px;
+  height: 52px;
+}
+.narrowSelect {
+  width: 86px;
+  min-width: 86px !important;
+  max-width: 86px;
+}
 
 main {
   display: grid;
@@ -277,4 +293,80 @@ input, select, textarea {
   margin-top: 8px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.pnlTables {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+.tradeExplorer {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+.tradeSplit {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 10px;
+}
+.pnlCard {
+  border: 1px solid var(--line);
+  background: #0f172a;
+  padding: 8px;
+}
+.pnlCard h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.tableWrap {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line);
+}
+.tableWrapTall {
+  max-height: 320px;
+}
+.pnlTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.pnlTable th,
+.pnlTable td {
+  border: 1px solid var(--line);
+  padding: 4px 6px;
+  text-align: left;
+}
+.pnlTable tbody tr {
+  cursor: pointer;
+}
+.pnlTable tbody tr:hover {
+  background: rgba(125, 211, 252, 0.12);
+}
+.pnlTable tbody tr.active {
+  background: rgba(56, 189, 248, 0.22);
+}
+.jumpTime {
+  color: #7dd3fc;
+  text-decoration: underline;
+}
+.pnlPos { color: #22c55e; }
+.pnlNeg { color: #ef4444; }
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.filterRow label {
+  margin: 0;
+  color: #cbd5e1;
+}
+.filterRow input[type="date"] {
+  width: 156px;
+  padding: 6px 8px;
 }

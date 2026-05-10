@@ -1,6 +1,8 @@
 let bars = [];
 let comments = [];
 let trades = [];
+let tradePnlList = [];
+let dailyPnlList = [];
 let flowEvents = [];
 let selectedIndex = null;
 let pending = [];
@@ -47,6 +49,15 @@ const engineFileEl = document.getElementById('engineFile');
 const switchEngineBtn = document.getElementById('switchEngineBtn');
 const statsGridEl = document.getElementById('statsGrid');
 const statsHintEl = document.getElementById('statsHint');
+const tradeDateFromEl = document.getElementById('tradeDateFrom');
+const tradeDateToEl = document.getElementById('tradeDateTo');
+const applyTradeRangeBtn = document.getElementById('applyTradeRangeBtn');
+const resetTradeRangeBtn = document.getElementById('resetTradeRangeBtn');
+const tradeSummaryGridEl = document.getElementById('tradeSummaryGrid');
+const dailyListTableEl = document.getElementById('dailyListTable');
+const tradeListTableEl = document.getElementById('tradeListTable');
+const tradeListTitleEl = document.getElementById('tradeListTitle');
+const openCommonConfigBtn = document.getElementById('openCommonConfigBtn');
 
 const modeBarBtn = document.getElementById('modeBarBtn');
 const modeRangeBtn = document.getElementById('modeRangeBtn');
@@ -64,11 +75,56 @@ const commentEl = document.getElementById('comment');
 const saveBtn = document.getElementById('saveBtn');
 const cancelBtn = document.getElementById('cancelBtn');
 
+const commonConfigModal = document.getElementById('commonConfigModal');
+const commonConfigPathEl = document.getElementById('commonConfigPath');
+const cfgDailyLossEnabledEl = document.getElementById('cfgDailyLossEnabled');
+const cfgDailyLossAmountEl = document.getElementById('cfgDailyLossAmount');
+const commonConfigSaveBtn = document.getElementById('commonConfigSaveBtn');
+const commonConfigCancelBtn = document.getElementById('commonConfigCancelBtn');
+
 let modalPayload = null;
 let datasetCatalog = { year: [], month: [], week: [], day: [] };
 let datasetCurrent = { bucket: null, file: null, source_file: '' };
 let engineCatalog = [];
 let engineCurrent = { file: null, path: null };
+let currentBuildId = '';
+let commonParams = { daily_max_loss_enabled: true, daily_max_loss_amount: 300 };
+let selectedTradeDay = '';
+
+async function fetchJsonNoCache(url) {
+  const sep = url.includes('?') ? '&' : '?';
+  const bust = `ts=${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  return fetch(`${url}${sep}${bust}`, {
+    cache: 'no-store',
+    headers: {
+      'Cache-Control': 'no-store, no-cache, max-age=0',
+      Pragma: 'no-cache',
+    },
+  }).then(r => r.json());
+}
+
+function resetBehaviorViews(statusText = '行为数据已清空，等待重新加载...') {
+  trades = [];
+  tradePnlList = [];
+  dailyPnlList = [];
+  flowEvents = [];
+  selectedIndex = null;
+  rangeStart = null;
+  selectedTradeDay = '';
+  if (tradeDateFromEl) tradeDateFromEl.value = '';
+  if (tradeDateToEl) tradeDateToEl.value = '';
+  currentBuildId = '';
+  if (flowListEl) {
+    flowListEl.innerHTML = `<div class="logItem"><div class="m">${statusText}</div></div>`;
+  }
+  if (statsGridEl) statsGridEl.innerHTML = '';
+  if (chartEl && chartEl.data) {
+    try { Plotly.purge(chartEl); } catch (_) {}
+  }
+  if (miniChartEl && miniChartEl.data) {
+    try { Plotly.purge(miniChartEl); } catch (_) {}
+  }
+}
 
 function toTime(t) {
   if (!t) return '';
@@ -117,6 +173,48 @@ function syncEngineControls() {
   renderEngineFiles(engineCurrent?.file || fallback);
 }
 
+async function loadCommonParams() {
+  const res = await fetchJsonNoCache('/api/common-params');
+  if (!res.ok) throw new Error(res.error || '加载公共配置失败');
+  commonParams = res.params || commonParams;
+  if (commonConfigPathEl) {
+    commonConfigPathEl.textContent = `配置文件: ${res.file || ''}`;
+  }
+  if (cfgDailyLossEnabledEl) {
+    cfgDailyLossEnabledEl.value = String(!!commonParams.daily_max_loss_enabled);
+  }
+  if (cfgDailyLossAmountEl) {
+    cfgDailyLossAmountEl.value = Number(commonParams.daily_max_loss_amount || 0);
+  }
+}
+
+function openCommonConfigModal() {
+  if (!commonConfigModal) return;
+  loadCommonParams()
+    .then(() => commonConfigModal.showModal())
+    .catch((e) => alert(`加载公共配置失败: ${e.message}`));
+}
+
+async function saveCommonConfig() {
+  const payload = {
+    daily_max_loss_enabled: String(cfgDailyLossEnabledEl?.value || 'true') === 'true',
+    daily_max_loss_amount: Number(cfgDailyLossAmountEl?.value || 0),
+  };
+  const res = await fetch('/api/common-params', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ params: payload }),
+  }).then(r => r.json());
+  if (!res.ok) {
+    alert(`保存失败: ${res.error || ''}`);
+    return;
+  }
+  commonParams = res.params || payload;
+  commonConfigModal.close();
+  alert('公共配置已保存，点击“切换引擎”或“刷新”后生效。');
+}
+
 async function switchEngineAndRefresh() {
   if (!engineFileEl || !switchEngineBtn) return;
   const file = engineFileEl.value;
@@ -126,6 +224,7 @@ async function switchEngineAndRefresh() {
   }
   switchEngineBtn.disabled = true;
   switchEngineBtn.textContent = '切换中...';
+  resetBehaviorViews('引擎切换中，旧行为数据已清空...');
   try {
     const res = await fetch('/api/engines/select', {
       method: 'POST',
@@ -175,6 +274,7 @@ async function switchDatasetAndRefresh() {
   }
   switchDatasetBtn.disabled = true;
   switchDatasetBtn.textContent = '切换中...';
+  resetBehaviorViews('数据切换中，旧行为数据已清空...');
   try {
     const res = await fetch('/api/datasets/select', {
       method: 'POST',
@@ -196,6 +296,7 @@ async function switchDatasetAndRefresh() {
 }
 
 async function fullRefreshAfterSwitch() {
+  resetBehaviorViews('正在加载新行为数据源...');
   await loadData();
   computeGlobalYRange();
   renderPending();
@@ -204,6 +305,7 @@ async function fullRefreshAfterSwitch() {
   computeFlowEvents();
   renderFlowList();
   renderStats();
+  renderTradeExplorer();
   buildChart();
   buildMiniChart();
 }
@@ -561,28 +663,20 @@ function computeFlowEvents() {
     }
   }
 
-  // 评论也并入全部流
-  for (const c of comments) {
-    const t = c.mode === 'range' ? toTime(c.start_time) : toTime(c.bar_time);
-    const bi = mapIdx.get(t);
-    if (bi == null) continue;
-    events.push({
-      time: t, barIndex: bi, category: 'comment',
-      title: c.mode === 'range' ? '区间评论' : '单K评论',
-      detail: `${c.kind}${c.tag ? ' ' + c.tag : ''}: ${c.comment}`,
-      reason: '用户标注反馈'
-    });
-  }
-
   events.sort((a, b) => a.barIndex - b.barIndex || a.time.localeCompare(b.time));
   flowEvents = events;
 }
 
 function renderFlowList() {
+  if (!flowListEl) return;
   const showAll = flowMode === 'all';
   const items = showAll
     ? flowEvents
     : flowEvents.filter(e => e.category === 'op' || e.category === 'state');
+  if (items.length === 0) {
+    flowListEl.innerHTML = '<div class="logItem"><div class="m">当前数据源暂无行为事件</div></div>';
+    return;
+  }
 
   const visualForEvent = (e) => {
     if (e.title === '开多') return { symbol: '▲', cls: 'op-long' };
@@ -613,10 +707,7 @@ function renderFlowList() {
   flowListEl.querySelectorAll('.flowItem').forEach(el => {
     el.onclick = () => {
       const idx = Number(el.dataset.idx);
-      centerOnIndex(idx);
-      if (idx >= 0 && idx < bars.length) {
-        infoEl.textContent = fmtBar(bars[idx], idx);
-      }
+      focusBarIndex(idx);
     };
   });
 }
@@ -683,13 +774,179 @@ function renderStats() {
   }
 }
 
+function fmtDateInputValue(dateStr) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(dateStr || '') ? dateStr : '';
+}
+
+function inDateRange(d, from, to) {
+  if (from && d < from) return false;
+  if (to && d > to) return false;
+  return true;
+}
+
+function applyTradeRangeAndRender(keepSelected = true) {
+  const sortedDays = [...dailyPnlList].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const minDay = sortedDays.length ? String(sortedDays[0].date) : '';
+  const maxDay = sortedDays.length ? String(sortedDays[sortedDays.length - 1].date) : '';
+  if (tradeDateFromEl && !tradeDateFromEl.value) tradeDateFromEl.value = fmtDateInputValue(minDay);
+  if (tradeDateToEl && !tradeDateToEl.value) tradeDateToEl.value = fmtDateInputValue(maxDay);
+  const from = tradeDateFromEl ? tradeDateFromEl.value : '';
+  const to = tradeDateToEl ? tradeDateToEl.value : '';
+
+  const filteredDaily = sortedDays.filter(d => inDateRange(String(d.date), from, to));
+  const dailySet = new Set(filteredDaily.map(d => String(d.date)));
+  const filteredTrades = tradePnlList.filter(t => dailySet.has(String(t.date)));
+
+  if (!keepSelected || !selectedTradeDay || !dailySet.has(selectedTradeDay)) {
+    selectedTradeDay = filteredDaily.length ? String(filteredDaily[0].date) : '';
+  }
+  renderTradeSummary(filteredDaily, filteredTrades, from, to);
+  renderDailyList(filteredDaily);
+  renderTradeList(filteredTrades, selectedTradeDay);
+}
+
+function renderTradeSummary(filteredDaily, filteredTrades, from, to) {
+  if (!tradeSummaryGridEl) return;
+  const closeCount = filteredTrades.length;
+  const winCount = filteredTrades.filter(t => Number(t.pnl) > 0).length;
+  const lossCount = closeCount - winCount;
+  const net = filteredTrades.reduce((s, t) => s + Number(t.pnl || 0), 0);
+  const winRate = closeCount > 0 ? (winCount / closeCount) : 0;
+  const selectedCount = selectedTradeDay ? filteredTrades.filter(t => String(t.date) === selectedTradeDay).length : 0;
+  const items = [
+    { k: '区间开始', v: from || '-' },
+    { k: '区间结束', v: to || '-' },
+    { k: '日期数量', v: `${filteredDaily.length}` },
+    { k: '区间交易数', v: `${closeCount}` },
+    { k: '区间盈利数', v: `${winCount}` },
+    { k: '区间亏损数', v: `${lossCount}` },
+    { k: '区间总盈亏', v: fmtNum(net), cls: net >= 0 ? 'pos' : 'neg' },
+    { k: '区间胜率', v: fmtPct(winRate), cls: winRate >= 0.5 ? 'pos' : 'neg' },
+    { k: '当前选中日期', v: selectedTradeDay || '-' },
+    { k: '当日交易数', v: `${selectedCount}` },
+  ];
+  tradeSummaryGridEl.innerHTML = items.map(it => `
+    <div class="statItem ${it.cls || ''}">
+      <div class="k">${it.k}</div>
+      <div class="v">${it.v}</div>
+    </div>
+  `).join('');
+}
+
+function renderDailyList(filteredDaily) {
+  if (!dailyListTableEl) return;
+  if (!filteredDaily.length) {
+    dailyListTableEl.innerHTML = '<div class="logItem"><div class="m">当前区间无日期数据</div></div>';
+    return;
+  }
+  const rows = filteredDaily.map(d => {
+    const day = String(d.date);
+    return `
+      <tr class="${selectedTradeDay === day ? 'active' : ''}" data-day="${day}">
+        <td>${day}</td>
+        <td>${d.trades}</td>
+        <td class="${Number(d.net_pnl) >= 0 ? 'pnlPos' : 'pnlNeg'}">${Number(d.net_pnl).toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
+  dailyListTableEl.innerHTML = `
+    <div class="tableWrap tableWrapTall">
+      <table class="pnlTable">
+        <thead><tr><th>日期</th><th>交易数</th><th>当日盈亏</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+  dailyListTableEl.querySelectorAll('tr[data-day]').forEach(row => {
+    row.onclick = () => {
+      selectedTradeDay = String(row.dataset.day || '');
+      applyTradeRangeAndRender(true);
+    };
+  });
+}
+
+function renderTradeList(filteredTrades, day) {
+  if (!tradeListTableEl) return;
+  const list = filteredTrades.filter(t => String(t.date) === String(day || ''));
+  if (tradeListTitleEl) {
+    tradeListTitleEl.textContent = day ? `交易明细（${day}）` : '交易明细';
+  }
+  if (!list.length) {
+    tradeListTableEl.innerHTML = '<div class="logItem"><div class="m">该日期暂无交易</div></div>';
+    return;
+  }
+  const rows = list.map(t => {
+    const entryTime = toTime(String(t.entry_time || ''));
+    const exitTime = toTime(String(t.exit_time || ''));
+    const entryIdx = barIndexByTime.get(entryTime);
+    const exitIdx = barIndexByTime.get(exitTime);
+    return `
+    <tr data-entry="${entryTime}" data-exit="${exitTime}">
+      <td>${t.id}</td>
+      <td>${t.side === 'long' ? '开多' : '开空'}</td>
+      <td class="jumpTime" data-idx="${entryIdx != null ? entryIdx : ''}">入: ${entryTime.slice(11, 16)}</td>
+      <td class="jumpTime" data-idx="${exitIdx != null ? exitIdx : ''}">平: ${exitTime.slice(11, 16)}</td>
+      <td class="${Number(t.pnl) >= 0 ? 'pnlPos' : 'pnlNeg'}">${Number(t.pnl).toFixed(2)}</td>
+      <td>${t.reason || ''}</td>
+    </tr>
+  `;
+  }).join('');
+  tradeListTableEl.innerHTML = `
+    <div class="tableWrap tableWrapTall">
+      <table class="pnlTable">
+        <thead><tr><th>ID</th><th>方向</th><th>入场节点</th><th>平仓节点</th><th>盈亏</th><th>原因</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+  tradeListTableEl.onclick = (ev) => {
+    const target = ev.target;
+    if (!target || !target.classList || !target.classList.contains('jumpTime')) return;
+    ev.stopPropagation();
+    const idx = Number(target.dataset.idx);
+    if (Number.isFinite(idx)) {
+      focusBarIndex(idx);
+    }
+  };
+}
+
+function renderTradeExplorer() {
+  applyTradeRangeAndRender(false);
+}
+
+function focusBarIndex(idx) {
+  if (!Number.isFinite(idx)) return;
+  if (idx < 0 || idx >= bars.length) return;
+  selectedIndex = idx;
+  centerOnIndex(idx);
+  if (idx >= 0 && idx < bars.length) {
+    infoEl.textContent = fmtBar(bars[idx], idx);
+  }
+  if (chartEl && chartEl.data) {
+    Plotly.relayout(chartEl, { shapes: buildAllShapes() });
+  }
+}
+
+function moveMainChartToCenter(idx) {
+  const raw = MAIN_MARGIN_LEFT + idx * currentPxPerBar - chartWrapEl.clientWidth / 2;
+  const contentWidth = Math.max(chartEl.scrollWidth || 0, chartWrapEl.scrollWidth || 0);
+  const maxScroll = Math.max(0, contentWidth - chartWrapEl.clientWidth);
+  const clamped = Math.max(0, Math.min(maxScroll, raw));
+  chartWrapEl.scrollTo({ left: clamped, behavior: 'auto' });
+  return clamped;
+}
+
 function centerOnIndex(idx) {
   if (idx < 0 || idx >= bars.length) return;
-  const target = MAIN_MARGIN_LEFT + idx * currentPxPerBar - chartWrapEl.clientWidth / 2;
-  const maxScroll = Math.max(0, chartEl.scrollWidth - chartWrapEl.clientWidth);
-  chartWrapEl.scrollLeft = Math.max(0, Math.min(maxScroll, target));
+  moveMainChartToCenter(idx);
   syncMiniWindowFromMainScroll();
   updateMainYRangeByViewport();
+  // next-frame hard align: avoid one-frame lag when Plotly just relayouted
+  requestAnimationFrame(() => {
+    moveMainChartToCenter(idx);
+    syncMiniWindowFromMainScroll();
+    updateMainYRangeByViewport();
+  });
 }
 
 function calcMinMaxPrice(i1, i2) {
@@ -1223,11 +1480,11 @@ async function clearAllComments() {
 
 async function loadData() {
   const [ohlcRes, commentsRes, tradesRes, datasetsRes, enginesRes] = await Promise.all([
-    fetch('/api/ohlc', { cache: 'no-store' }).then(r => r.json()),
-    fetch('/api/comments', { cache: 'no-store' }).then(r => r.json()),
-    fetch('/api/trades', { cache: 'no-store' }).then(r => r.json()),
-    fetch('/api/datasets', { cache: 'no-store' }).then(r => r.json()),
-    fetch('/api/engines', { cache: 'no-store' }).then(r => r.json()),
+    fetchJsonNoCache('/api/ohlc'),
+    fetchJsonNoCache('/api/comments'),
+    fetchJsonNoCache('/api/trades'),
+    fetchJsonNoCache('/api/datasets'),
+    fetchJsonNoCache('/api/engines'),
   ]);
 
   if (!ohlcRes.ok) throw new Error(ohlcRes.error || '加载OHLC失败');
@@ -1236,6 +1493,16 @@ async function loadData() {
   barIndexByTime = new Map(bars.map((b, i) => [b.time, i]));
   comments = commentsRes.items || [];
   trades = (tradesRes.data && tradesRes.data.trades) ? tradesRes.data.trades : [];
+  tradePnlList = (tradesRes.data && tradesRes.data.trade_pnl_list) ? tradesRes.data.trade_pnl_list : [];
+  dailyPnlList = (tradesRes.data && tradesRes.data.daily_pnl_list) ? tradesRes.data.daily_pnl_list : [];
+  commonParams = (tradesRes.data && tradesRes.data.summary && tradesRes.data.summary.common_params)
+    ? tradesRes.data.summary.common_params
+    : commonParams;
+  currentBuildId = String(
+    (ohlcRes.data && ohlcRes.data.build_id) ||
+    (tradesRes.data && tradesRes.data.summary && tradesRes.data.summary.build_id) ||
+    ''
+  );
 
   if (datasetsRes && datasetsRes.ok) {
     datasetCatalog = datasetsRes.catalog || datasetCatalog;
@@ -1262,7 +1529,9 @@ async function loadData() {
   const engineName = engineCurrent?.file || 'N/A';
   const engineModule = baseName(ohlcRes.data.engine_module || '');
   const genAt = ohlcRes.data.generated_at || (tradesRes.data && tradesRes.data.summary && tradesRes.data.summary.generated_at) || '';
-  dataMetaEl.textContent = `${ohlcRes.data.symbol} | ${ohlcRes.data.timeframe} | 引擎=${engineName} (${engineModule || 'n/a'}) | ${bucketLabel(srcBucket)}=${srcFile || 'N/A'} | BollDev=${bollDev} | ${ohlcRes.data.count} bars | trades: ${trades.length} | rebuilt=${genAt || 'n/a'}`;
+  if (dataMetaEl) {
+    dataMetaEl.textContent = `${ohlcRes.data.symbol} | ${ohlcRes.data.timeframe} | 引擎=${engineName} (${engineModule || 'n/a'}) | ${bucketLabel(srcBucket)}=${srcFile || 'N/A'} | BollDev=${bollDev} | ${ohlcRes.data.count} bars | trades: ${trades.length} | build=${currentBuildId || 'n/a'} | rebuilt=${genAt || 'n/a'}`;
+  }
 }
 
 modeBarBtn.onclick = () => setMode('bar');
@@ -1284,6 +1553,25 @@ if (switchDatasetBtn) {
 if (switchEngineBtn) {
   switchEngineBtn.onclick = switchEngineAndRefresh;
 }
+if (openCommonConfigBtn) {
+  openCommonConfigBtn.onclick = openCommonConfigModal;
+}
+if (commonConfigSaveBtn) {
+  commonConfigSaveBtn.onclick = saveCommonConfig;
+}
+if (commonConfigCancelBtn) {
+  commonConfigCancelBtn.onclick = () => { if (commonConfigModal) commonConfigModal.close(); };
+}
+if (applyTradeRangeBtn) {
+  applyTradeRangeBtn.onclick = () => applyTradeRangeAndRender(false);
+}
+if (resetTradeRangeBtn) {
+  resetTradeRangeBtn.onclick = () => {
+    if (tradeDateFromEl) tradeDateFromEl.value = '';
+    if (tradeDateToEl) tradeDateToEl.value = '';
+    applyTradeRangeAndRender(false);
+  };
+}
 
 window.addEventListener('resize', () => {
   if (bars.length > 0) {
@@ -1302,10 +1590,11 @@ window.addEventListener('resize', () => {
     computeFlowEvents();
     renderFlowList();
     renderStats();
+    renderTradeExplorer();
     buildChart();
     buildMiniChart();
   } catch (e) {
-    dataMetaEl.textContent = `加载失败: ${e.message}`;
+    if (dataMetaEl) dataMetaEl.textContent = `加载失败: ${e.message}`;
     console.error(e);
   }
 })();

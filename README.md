@@ -36,22 +36,31 @@ python3 server.py
 
 浏览器打开：`http://127.0.0.1:8765/`
 
+### 服务管理（推荐）
+```bash
+cd debug_system
+python service_manager.py start
+python service_manager.py status
+python service_manager.py restart
+python service_manager.py stop
+```
+
 ### Windows (PowerShell)
 ```powershell
-py -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install pandas
 cd debug_system
-py server.py
+python server.py
 ```
 
 ### Windows (CMD)
 ```cmd
-py -m venv .venv
+python -m venv .venv
 .venv\Scripts\activate.bat
 pip install pandas
 cd debug_system
-py server.py
+python server.py
 ```
 
 浏览器打开：`http://127.0.0.1:8765/`

@@ -1,3 +1,9 @@
+"""v3 baseline replay.
+
+Tag: research-replay/baseline-v3-self
+Meaning: v3 is treated as the baseline reference logic itself (no external round result file).
+"""
+
 import math
 import pandas as pd
 from pathlib import Path
@@ -435,7 +441,7 @@ def run_backtest(df):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Run Survival_v3 offline backtest')
+    ap = argparse.ArgumentParser(description='Run Survival_v3 backtest (research-replay baseline-v3-self)')
     ap.add_argument('--file', type=str, default=str(FILE), help='input file path (.xlsx/.csv)')
     args = ap.parse_args()
 

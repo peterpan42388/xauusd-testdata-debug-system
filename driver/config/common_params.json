@@ -1,0 +1,4 @@
+{
+  "daily_max_loss_enabled": true,
+  "daily_max_loss_amount": 300.0
+}
