@@ -90,6 +90,9 @@ let engineCurrent = { file: null, path: null };
 let currentBuildId = '';
 let commonParams = { daily_max_loss_enabled: true, daily_max_loss_amount: 300 };
 let selectedTradeDay = '';
+let tradeRangeInitialized = false;
+let lastValidTradeFrom = '';
+let lastValidTradeTo = '';
 
 async function fetchJsonNoCache(url) {
   const sep = url.includes('?') ? '&' : '?';
@@ -111,6 +114,9 @@ function resetBehaviorViews(statusText = '行为数据已清空，等待重新�
   selectedIndex = null;
   rangeStart = null;
   selectedTradeDay = '';
+  tradeRangeInitialized = false;
+  lastValidTradeFrom = '';
+  lastValidTradeTo = '';
   if (tradeDateFromEl) tradeDateFromEl.value = '';
   if (tradeDateToEl) tradeDateToEl.value = '';
   currentBuildId = '';
@@ -784,14 +790,45 @@ function inDateRange(d, from, to) {
   return true;
 }
 
-function applyTradeRangeAndRender(keepSelected = true) {
+function applyTradeRangeAndRender(keepSelected = true, opts = {}) {
   const sortedDays = [...dailyPnlList].sort((a, b) => String(a.date).localeCompare(String(b.date)));
   const minDay = sortedDays.length ? String(sortedDays[0].date) : '';
   const maxDay = sortedDays.length ? String(sortedDays[sortedDays.length - 1].date) : '';
-  if (tradeDateFromEl && !tradeDateFromEl.value) tradeDateFromEl.value = fmtDateInputValue(minDay);
-  if (tradeDateToEl && !tradeDateToEl.value) tradeDateToEl.value = fmtDateInputValue(maxDay);
-  const from = tradeDateFromEl ? tradeDateFromEl.value : '';
-  const to = tradeDateToEl ? tradeDateToEl.value : '';
+  const forceReset = !!opts.forceReset;
+
+  if (tradeDateFromEl) {
+    tradeDateFromEl.min = fmtDateInputValue(minDay);
+    tradeDateFromEl.max = fmtDateInputValue(maxDay);
+  }
+  if (tradeDateToEl) {
+    tradeDateToEl.min = fmtDateInputValue(minDay);
+    tradeDateToEl.max = fmtDateInputValue(maxDay);
+  }
+
+  let fromRaw = tradeDateFromEl ? String(tradeDateFromEl.value || '') : '';
+  let toRaw = tradeDateToEl ? String(tradeDateToEl.value || '') : '';
+  let from = fmtDateInputValue(fromRaw);
+  let to = fmtDateInputValue(toRaw);
+
+  if (forceReset || !tradeRangeInitialized) {
+    from = fmtDateInputValue(minDay);
+    to = fmtDateInputValue(maxDay);
+    tradeRangeInitialized = true;
+  } else {
+    // Apply 时保留用户选择；若浏览器把非法/未完成输入清空，则回退到上一次有效值
+    if (!from) from = lastValidTradeFrom || fmtDateInputValue(minDay);
+    if (!to) to = lastValidTradeTo || fmtDateInputValue(maxDay);
+  }
+
+  // 保证区间合法，优先保留用户设定的开始日期
+  if (from && to && from > to) {
+    to = from;
+  }
+
+  if (tradeDateFromEl) tradeDateFromEl.value = from || '';
+  if (tradeDateToEl) tradeDateToEl.value = to || '';
+  lastValidTradeFrom = from || '';
+  lastValidTradeTo = to || '';
 
   const filteredDaily = sortedDays.filter(d => inDateRange(String(d.date), from, to));
   const dailySet = new Set(filteredDaily.map(d => String(d.date)));
@@ -1405,7 +1442,7 @@ function openRangeModal(a, b) {
   modal.showModal();
 }
 
-function saveToPending() {
+async function saveToPending() {
   if (!modalPayload) return;
   const text = commentEl.value.trim();
   if (!text) {
@@ -1413,17 +1450,42 @@ function saveToPending() {
     return;
   }
 
-  pending.push({
+  const item = {
     ...modalPayload,
     kind: kindEl.value,
     tag: tagEl.value.trim(),
     comment: text,
-  });
+  };
+
+  try {
+    const res = await fetch('/api/comments', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item),
+    }).then(r => r.json());
+    if (!res.ok) {
+      alert(`保存失败: ${res.error || ''}`);
+      return;
+    }
+    const saved = res.item || item;
+    pending.push(saved);
+    comments.push(saved);
+  } catch (e) {
+    alert(`保存失败: ${e.message}`);
+    return;
+  }
 
   modal.close();
   modalPayload = null;
   renderPending();
+  renderLogs();
   updateSubmitCount();
+  computeFlowEvents();
+  renderFlowList();
+  if (chartEl && chartEl.data) {
+    buildChart();
+  }
 }
 
 async function submitPending() {
@@ -1432,10 +1494,10 @@ async function submitPending() {
     return;
   }
 
-  const res = await fetch('/api/comments/batch', {
+  const res = await fetch('/api/comments/submit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ items: pending }),
+    body: JSON.stringify({ engine_file: engineCurrent?.file || '' }),
   }).then(r => r.json());
 
   if (!res.ok) {
@@ -1443,7 +1505,7 @@ async function submitPending() {
     return;
   }
 
-  comments.push(...res.items);
+  comments = [];
   pending = [];
   renderPending();
   renderLogs();
@@ -1452,6 +1514,7 @@ async function submitPending() {
   renderFlowList();
   renderStats();
   buildChart();
+  alert(`提交完成：${res.count || 0} 条，归档到 ${res.archive_file || '(无)'}`);
 }
 
 async function clearAllComments() {
@@ -1468,6 +1531,9 @@ async function clearAllComments() {
       return;
     }
     comments = [];
+    pending = [];
+    renderPending();
+    updateSubmitCount();
     renderLogs();
     computeFlowEvents();
     renderFlowList();
@@ -1492,6 +1558,7 @@ async function loadData() {
   bars = (ohlcRes.data.rows || []).map(b => ({ ...b, time: toTime(b.time) }));
   barIndexByTime = new Map(bars.map((b, i) => [b.time, i]));
   comments = commentsRes.items || [];
+  pending = [...comments];
   trades = (tradesRes.data && tradesRes.data.trades) ? tradesRes.data.trades : [];
   tradePnlList = (tradesRes.data && tradesRes.data.trade_pnl_list) ? tradesRes.data.trade_pnl_list : [];
   dailyPnlList = (tradesRes.data && tradesRes.data.daily_pnl_list) ? tradesRes.data.daily_pnl_list : [];
@@ -1563,13 +1630,11 @@ if (commonConfigCancelBtn) {
   commonConfigCancelBtn.onclick = () => { if (commonConfigModal) commonConfigModal.close(); };
 }
 if (applyTradeRangeBtn) {
-  applyTradeRangeBtn.onclick = () => applyTradeRangeAndRender(false);
+  applyTradeRangeBtn.onclick = () => applyTradeRangeAndRender(false, { forceReset: false });
 }
 if (resetTradeRangeBtn) {
   resetTradeRangeBtn.onclick = () => {
-    if (tradeDateFromEl) tradeDateFromEl.value = '';
-    if (tradeDateToEl) tradeDateToEl.value = '';
-    applyTradeRangeAndRender(false);
+    applyTradeRangeAndRender(false, { forceReset: true });
   };
 }
 

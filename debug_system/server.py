@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from uuid import uuid4
 from collections import defaultdict
+import re
 import sys
 import importlib.util
 import pandas as pd
@@ -115,6 +116,38 @@ def read_comments():
 def append_comment(obj):
     with LOG_FILE.open('a', encoding='utf-8') as f:
         f.write(json.dumps(obj, ensure_ascii=False) + '\n')
+
+
+def _engine_stem_from_name(file_name: str):
+    stem = Path(str(file_name or 'unknown_engine')).stem.strip() or 'unknown_engine'
+    stem = re.sub(r'[^A-Za-z0-9_-]+', '_', stem)
+    return stem
+
+
+def archive_temp_comments(engine_file: str | None = None):
+    items = read_comments()
+    if len(items) == 0:
+        return {'count': 0, 'items': [], 'archive_file': None, 'engine_name': _engine_stem_from_name(engine_file or '')}
+
+    if not engine_file:
+        eng = current_engine_meta() or {}
+        engine_file = str(eng.get('file') or '')
+    engine_name = _engine_stem_from_name(engine_file)
+    out_dir = BASE / 'logs' / engine_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_name = f"comments_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+    out_path = out_dir / out_name
+    with out_path.open('w', encoding='utf-8') as f:
+        for it in items:
+            f.write(json.dumps(it, ensure_ascii=False) + '\n')
+
+    LOG_FILE.write_text('', encoding='utf-8')
+    return {
+        'count': len(items),
+        'items': items,
+        'archive_file': str(out_path),
+        'engine_name': engine_name,
+    }
 
 
 def list_engine_files():
@@ -758,6 +791,15 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json({'ok': False, 'error': f'clear failed: {e}'}, 500)
             return self._json({'ok': True, 'count': 0}, 200)
+
+        if path == '/api/comments/submit':
+            try:
+                payload = self._read_json_body() if int(self.headers.get('Content-Length', '0')) > 0 else {}
+                engine_file = str(payload.get('engine_file', '')).strip() if isinstance(payload, dict) else ''
+                result = archive_temp_comments(engine_file=engine_file or None)
+            except Exception as e:
+                return self._json({'ok': False, 'error': f'submit failed: {e}'}, 500)
+            return self._json({'ok': True, **result}, 200)
 
         if path == '/api/engines/select':
             try:
