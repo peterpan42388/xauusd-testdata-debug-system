@@ -9,5 +9,12 @@ __pycache__/
 *.mq5
 *.MQ5
 
+# keep only minimal driver files in repo
+driver/*
+!driver/config/
+!driver/config/**
+!driver/run_survival_v0_backtest.py
+!driver/run_survival_v3_backtest.py
+
 # local temp
 debug_system/logs/*.jsonl
