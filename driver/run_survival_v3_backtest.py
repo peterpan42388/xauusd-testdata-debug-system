@@ -9,7 +9,7 @@ import pandas as pd
 from pathlib import Path
 import argparse
 
-FILE = Path('/Users/leo/Menu/py_workspace/gold/TestData/XAUUSDM5-5.1-5.xlsx')
+FILE = Path(__file__).resolve().parents[1] / 'Week' / 'Week_06_20260504_20260510.csv'
 SHEET = 'XAUUSDM5'
 
 Bollinger_Period = 20

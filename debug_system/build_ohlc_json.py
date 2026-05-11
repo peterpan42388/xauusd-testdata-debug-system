@@ -3,10 +3,11 @@ import json
 import pandas as pd
 import sys
 
-sys.path.append('/Users/leo/Menu/py_workspace/gold/TestData')
+BASE = Path(__file__).resolve().parents[1]
+DRIVER = BASE / 'driver'
+sys.path.insert(0, str(DRIVER))
 from run_survival_v3_backtest import parse_data, indicators  # type: ignore
 
-BASE = Path('/Users/leo/Menu/py_workspace/gold/TestData')
 SRC = BASE / 'Week' / 'Week_06_20260504_20260510.csv'
 OUT = BASE / 'debug_system' / 'data' / 'ohlc.json'
 BOLLINGER_DEVIATION = 2.0

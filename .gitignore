@@ -13,8 +13,7 @@ __pycache__/
 driver/*
 !driver/config/
 !driver/config/**
-!driver/run_survival_v0_backtest.py
-!driver/run_survival_v3_backtest.py
+!driver/run_*_backtest.py
 
 # local temp
 debug_system/logs/*.jsonl

@@ -291,12 +291,8 @@ def resolve_engine_backtest_module(engine_file_name: str):
         DATA_ROOT / 'run_survival_v3_backtest.py',
     ])
 
-    module_path = None
-    for p in candidates:
-        if p.exists():
-            module_path = p
-            break
-    if module_path is None:
+    existing = [p for p in candidates if p.exists()]
+    if not existing:
         raise FileNotFoundError('No backtest module found in driver/TestData.')
 
     # Ensure driver/data roots are importable for backtest modules that import each other,
@@ -305,15 +301,23 @@ def resolve_engine_backtest_module(engine_file_name: str):
         if _p not in sys.path:
             sys.path.insert(0, _p)
 
-    spec = importlib.util.spec_from_file_location(f'backtest_{module_path.stem}', str(module_path))
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f'Failed to load backtest module: {module_path}')
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    for fn in ('parse_data', 'indicators', 'run_backtest'):
-        if not hasattr(mod, fn):
-            raise RuntimeError(f'Backtest module missing "{fn}": {module_path}')
-    return mod, module_path
+    errs = []
+    for module_path in existing:
+        try:
+            spec = importlib.util.spec_from_file_location(f'backtest_{module_path.stem}', str(module_path))
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f'Failed to load backtest module: {module_path}')
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            for fn in ('parse_data', 'indicators', 'run_backtest'):
+                if not hasattr(mod, fn):
+                    raise RuntimeError(f'Backtest module missing "{fn}": {module_path}')
+            return mod, module_path
+        except Exception as e:
+            errs.append(f'{module_path}: {e}')
+            continue
+    raise RuntimeError('Failed to load any backtest module. ' + ' | '.join(errs))
 
 
 def load_parser_module():
@@ -330,6 +334,7 @@ def load_parser_module():
             spec = importlib.util.spec_from_file_location(f'backtest_{p.stem}', str(p))
             if spec and spec.loader:
                 mod = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = mod
                 spec.loader.exec_module(mod)
                 if hasattr(mod, 'parse_data'):
                     return mod

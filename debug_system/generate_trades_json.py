@@ -3,11 +3,11 @@ import json
 import sys
 import pandas as pd
 
-# 复用已有离线回测逻辑
-sys.path.append('/Users/leo/Menu/py_workspace/gold/TestData')
+BASE = Path(__file__).resolve().parents[1]
+DRIVER = BASE / 'driver'
+sys.path.insert(0, str(DRIVER))
 from run_survival_v3_backtest import parse_data, indicators, run_backtest  # type: ignore
 
-BASE = Path('/Users/leo/Menu/py_workspace/gold/TestData')
 OUT = BASE / 'debug_system' / 'data' / 'trades.json'
 SRC = BASE / 'Week' / 'Week_06_20260504_20260510.csv'
 

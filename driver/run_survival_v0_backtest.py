@@ -3,7 +3,7 @@ import argparse
 
 import run_survival_v7_backtest as base
 
-FILE = Path('/Users/leo/Menu/py_workspace/gold/TestData_publish_repo/Week/Week_06_20260504_20260510.csv')
+FILE = Path(__file__).resolve().parents[1] / 'Week' / 'Week_06_20260504_20260510.csv'
 
 # Re-export parser/indicator so debug_system can load uniformly
 parse_data = base.parse_data
