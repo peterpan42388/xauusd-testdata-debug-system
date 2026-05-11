@@ -29,7 +29,8 @@
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install pandas
+python -m pip install -U pip setuptools wheel
+pip install -r debug_system/requirements.txt
 cd debug_system
 python3 server.py
 ```
@@ -47,25 +48,57 @@ python service_manager.py stop
 
 ### Windows (PowerShell)
 ```powershell
-python -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install pandas
+python -m pip install -U pip setuptools wheel
+pip install -r debug_system\requirements.txt --no-cache-dir
 cd debug_system
 python server.py
 ```
 
 ### Windows (CMD)
 ```cmd
-python -m venv .venv
+py -3.12 -m venv .venv
 .venv\Scripts\activate.bat
-pip install pandas
+python -m pip install -U pip setuptools wheel
+pip install -r debug_system\requirements.txt --no-cache-dir
 cd debug_system
 python server.py
 ```
 
 浏览器打开：`http://127.0.0.1:8765/`
 
+### Windows 报错修复（`numpy._core._multiarray_umath`）
+如果出现你截图中的报错，请在项目根目录执行：
+
+```cmd
+rmdir /s /q .venv
+py -3.12 -m venv .venv
+.venv\Scripts\activate.bat
+python -m pip install -U pip setuptools wheel
+pip install -r debug_system\requirements.txt --no-cache-dir
+cd debug_system
+python server.py
+```
+
+说明：
+- 必须使用 **64 位 Python**（推荐 3.12）。
+- 不要混用旧的 `site-packages` 和新的 Python 版本。
+
 ---
+
+## 公共风控参数（已接入引擎）
+
+固定配置文件：
+- `driver/config/common_params.json`
+
+默认参数：
+- `daily_max_loss_pct = 0.08`（每日最大亏损=资金8%）
+- `per_trade_max_loss_pct = 0.08`（单笔最大亏损=资金8%）
+- `daily_max_consecutive_losses = 3`（每日连续亏损3次）
+
+触发任一条件后：
+- 当日停止开新仓，直到下一交易日自动恢复。
 
 ## 使用流程（推荐）
 

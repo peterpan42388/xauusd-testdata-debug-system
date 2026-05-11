@@ -29,7 +29,8 @@ visual K-line replay, backtest engine switching, behavior-flow inspection, comme
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install pandas
+python -m pip install -U pip setuptools wheel
+pip install -r debug_system/requirements.txt
 cd debug_system
 python3 server.py
 ```
@@ -47,25 +48,57 @@ python service_manager.py stop
 
 ### Windows (PowerShell)
 ```powershell
-python -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install pandas
+python -m pip install -U pip setuptools wheel
+pip install -r debug_system\requirements.txt --no-cache-dir
 cd debug_system
 python server.py
 ```
 
 ### Windows (CMD)
 ```cmd
-python -m venv .venv
+py -3.12 -m venv .venv
 .venv\Scripts\activate.bat
-pip install pandas
+python -m pip install -U pip setuptools wheel
+pip install -r debug_system\requirements.txt --no-cache-dir
 cd debug_system
 python server.py
 ```
 
 Open in browser: `http://127.0.0.1:8765/`
 
+### Windows fix for `numpy._core._multiarray_umath`
+If you hit the same error as in your screenshot, run from project root:
+
+```cmd
+rmdir /s /q .venv
+py -3.12 -m venv .venv
+.venv\Scripts\activate.bat
+python -m pip install -U pip setuptools wheel
+pip install -r debug_system\requirements.txt --no-cache-dir
+cd debug_system
+python server.py
+```
+
+Notes:
+- Use **64-bit Python** (3.12 recommended).
+- Avoid reusing old `site-packages` from another Python version.
+
 ---
+
+## Shared Risk Params (wired to engines)
+
+Fixed config file:
+- `driver/config/common_params.json`
+
+Default values:
+- `daily_max_loss_pct = 0.08` (8% daily max loss)
+- `per_trade_max_loss_pct = 0.08` (8% per-trade max loss)
+- `daily_max_consecutive_losses = 3`
+
+When any rule is hit:
+- stop opening new trades for the current day, resume automatically next day.
 
 ## Recommended Workflow
 

@@ -8,7 +8,18 @@ from collections import defaultdict
 import re
 import sys
 import importlib.util
-import pandas as pd
+try:
+    import pandas as pd
+except Exception as e:
+    print("[FATAL] Python dependency import failed: pandas/numpy")
+    print("[FATAL] 原因:", repr(e))
+    print("[FATAL] Windows 修复建议:")
+    print("  1) 删除旧虚拟环境: rmdir /s /q .venv")
+    print("  2) 使用 64 位 Python 3.12 重建: py -3.12 -m venv .venv")
+    print("  3) 激活后升级打包工具: python -m pip install -U pip setuptools wheel")
+    print("  4) 重新安装依赖: pip install --no-cache-dir numpy==2.2.6 pandas==2.2.3")
+    print("  5) 启动服务: cd debug_system && python server.py")
+    sys.exit(1)
 
 BASE = Path(__file__).resolve().parent
 WEB_DIR = BASE / 'web'
@@ -22,8 +33,9 @@ DRIVER_DIR = DATA_ROOT / 'driver'
 BOLLINGER_DEVIATION = 2.0
 COMMON_PARAMS_FILE = DRIVER_DIR / 'config' / 'common_params.json'
 DEFAULT_COMMON_PARAMS = {
-    'daily_max_loss_enabled': True,
-    'daily_max_loss_amount': 300.0,
+    'daily_max_loss_pct': 0.08,
+    'per_trade_max_loss_pct': 0.08,
+    'daily_max_consecutive_losses': 3,
 }
 
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -43,20 +55,35 @@ def read_common_params():
     out = dict(DEFAULT_COMMON_PARAMS)
     out.update(cfg)
     try:
-        out['daily_max_loss_amount'] = float(out.get('daily_max_loss_amount', DEFAULT_COMMON_PARAMS['daily_max_loss_amount']))
+        out['daily_max_loss_pct'] = max(0.0, float(out.get('daily_max_loss_pct', DEFAULT_COMMON_PARAMS['daily_max_loss_pct'])))
     except Exception:
-        out['daily_max_loss_amount'] = DEFAULT_COMMON_PARAMS['daily_max_loss_amount']
-    out['daily_max_loss_enabled'] = bool(out.get('daily_max_loss_enabled', DEFAULT_COMMON_PARAMS['daily_max_loss_enabled']))
+        out['daily_max_loss_pct'] = DEFAULT_COMMON_PARAMS['daily_max_loss_pct']
+    try:
+        out['per_trade_max_loss_pct'] = max(0.0, float(out.get('per_trade_max_loss_pct', DEFAULT_COMMON_PARAMS['per_trade_max_loss_pct'])))
+    except Exception:
+        out['per_trade_max_loss_pct'] = DEFAULT_COMMON_PARAMS['per_trade_max_loss_pct']
+    try:
+        out['daily_max_consecutive_losses'] = max(0, int(out.get('daily_max_consecutive_losses', DEFAULT_COMMON_PARAMS['daily_max_consecutive_losses'])))
+    except Exception:
+        out['daily_max_consecutive_losses'] = DEFAULT_COMMON_PARAMS['daily_max_consecutive_losses']
     return out
 
 
 def write_common_params(payload: dict):
     cur = read_common_params()
-    if 'daily_max_loss_enabled' in payload:
-        cur['daily_max_loss_enabled'] = bool(payload.get('daily_max_loss_enabled'))
-    if 'daily_max_loss_amount' in payload:
+    if 'daily_max_loss_pct' in payload:
         try:
-            cur['daily_max_loss_amount'] = max(0.0, float(payload.get('daily_max_loss_amount')))
+            cur['daily_max_loss_pct'] = max(0.0, float(payload.get('daily_max_loss_pct')))
+        except Exception:
+            pass
+    if 'per_trade_max_loss_pct' in payload:
+        try:
+            cur['per_trade_max_loss_pct'] = max(0.0, float(payload.get('per_trade_max_loss_pct')))
+        except Exception:
+            pass
+    if 'daily_max_consecutive_losses' in payload:
+        try:
+            cur['daily_max_consecutive_losses'] = max(0, int(payload.get('daily_max_consecutive_losses')))
         except Exception:
             pass
     COMMON_PARAMS_FILE.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -64,15 +91,19 @@ def write_common_params(payload: dict):
 
 
 def apply_common_limits_to_result(res: dict, common_params: dict):
-    daily_enabled = bool(common_params.get('daily_max_loss_enabled', False))
-    daily_limit = float(common_params.get('daily_max_loss_amount', 0.0) or 0.0)
-    if (not daily_enabled) or daily_limit <= 0:
+    initial_balance = 1000.0
+    daily_limit = initial_balance * float(common_params.get('daily_max_loss_pct', 0.0) or 0.0)
+    per_trade_limit = initial_balance * float(common_params.get('per_trade_max_loss_pct', 0.0) or 0.0)
+    consec_limit = int(common_params.get('daily_max_consecutive_losses', 0) or 0)
+    if daily_limit <= 0 and per_trade_limit <= 0 and consec_limit <= 0:
         return res
 
     filtered = []
     day_pnl = defaultdict(float)
+    day_consec_loss = defaultdict(int)
     blocked_days = set()
     blocked_count = 0
+    blocked_by_rule = {'daily_max_loss': 0, 'per_trade_max_loss': 0, 'daily_consecutive_losses': 0}
     for t in res.get('trades', []):
         exit_dt = pd.to_datetime(t.get('exit_time'))
         day_key = exit_dt.strftime('%Y-%m-%d')
@@ -82,11 +113,27 @@ def apply_common_limits_to_result(res: dict, common_params: dict):
         pnl = float(t.get('pnl', 0.0))
         filtered.append(t)
         day_pnl[day_key] += pnl
-        if day_pnl[day_key] <= -daily_limit:
+        if pnl < 0:
+            day_consec_loss[day_key] += 1
+        else:
+            day_consec_loss[day_key] = 0
+
+        if per_trade_limit > 0 and pnl <= -per_trade_limit:
             blocked_days.add(day_key)
+            blocked_by_rule['per_trade_max_loss'] += 1
+            continue
+        if daily_limit > 0 and day_pnl[day_key] <= -daily_limit:
+            blocked_days.add(day_key)
+            blocked_by_rule['daily_max_loss'] += 1
+            continue
+        if consec_limit > 0 and day_consec_loss[day_key] >= consec_limit:
+            blocked_days.add(day_key)
+            blocked_by_rule['daily_consecutive_losses'] += 1
+            continue
 
     res['trades'] = filtered
     res['blocked_by_daily_loss'] = blocked_count
+    res['blocked_by_rule'] = blocked_by_rule
     return res
 
 

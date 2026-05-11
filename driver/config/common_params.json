@@ -1,4 +1,5 @@
 {
-  "daily_max_loss_enabled": true,
-  "daily_max_loss_amount": 300.0
+  "daily_max_loss_pct": 0.08,
+  "per_trade_max_loss_pct": 0.08,
+  "daily_max_consecutive_losses": 3
 }

@@ -105,13 +105,12 @@
     <form method="dialog" id="commonConfigForm">
       <h3>公共配置（回测参数）</h3>
       <pre id="commonConfigPath"></pre>
-      <label>启用每日最高止损金额</label>
-      <select id="cfgDailyLossEnabled">
-        <option value="true">启用</option>
-        <option value="false">关闭</option>
-      </select>
-      <label>每日最高止损金额</label>
-      <input id="cfgDailyLossAmount" type="number" min="0" step="1" />
+      <label>每日最大亏损比例（默认0.08=8%）</label>
+      <input id="cfgDailyLossPct" type="number" min="0" step="0.001" />
+      <label>每笔最大亏损比例（默认0.08=8%）</label>
+      <input id="cfgPerTradeLossPct" type="number" min="0" step="0.001" />
+      <label>每日连续亏损次数（默认3）</label>
+      <input id="cfgDailyConsecLoss" type="number" min="0" step="1" />
       <div class="actions">
         <button type="button" id="commonConfigCancelBtn">取消</button>
         <button type="button" id="commonConfigSaveBtn">保存配置</button>

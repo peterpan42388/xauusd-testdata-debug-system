@@ -77,8 +77,9 @@ const cancelBtn = document.getElementById('cancelBtn');
 
 const commonConfigModal = document.getElementById('commonConfigModal');
 const commonConfigPathEl = document.getElementById('commonConfigPath');
-const cfgDailyLossEnabledEl = document.getElementById('cfgDailyLossEnabled');
-const cfgDailyLossAmountEl = document.getElementById('cfgDailyLossAmount');
+const cfgDailyLossPctEl = document.getElementById('cfgDailyLossPct');
+const cfgPerTradeLossPctEl = document.getElementById('cfgPerTradeLossPct');
+const cfgDailyConsecLossEl = document.getElementById('cfgDailyConsecLoss');
 const commonConfigSaveBtn = document.getElementById('commonConfigSaveBtn');
 const commonConfigCancelBtn = document.getElementById('commonConfigCancelBtn');
 
@@ -88,7 +89,7 @@ let datasetCurrent = { bucket: null, file: null, source_file: '' };
 let engineCatalog = [];
 let engineCurrent = { file: null, path: null };
 let currentBuildId = '';
-let commonParams = { daily_max_loss_enabled: true, daily_max_loss_amount: 300 };
+let commonParams = { daily_max_loss_pct: 0.08, per_trade_max_loss_pct: 0.08, daily_max_consecutive_losses: 3 };
 let selectedTradeDay = '';
 let tradeRangeInitialized = false;
 let lastValidTradeFrom = '';
@@ -186,12 +187,9 @@ async function loadCommonParams() {
   if (commonConfigPathEl) {
     commonConfigPathEl.textContent = `配置文件: ${res.file || ''}`;
   }
-  if (cfgDailyLossEnabledEl) {
-    cfgDailyLossEnabledEl.value = String(!!commonParams.daily_max_loss_enabled);
-  }
-  if (cfgDailyLossAmountEl) {
-    cfgDailyLossAmountEl.value = Number(commonParams.daily_max_loss_amount || 0);
-  }
+  if (cfgDailyLossPctEl) cfgDailyLossPctEl.value = Number(commonParams.daily_max_loss_pct ?? 0.08);
+  if (cfgPerTradeLossPctEl) cfgPerTradeLossPctEl.value = Number(commonParams.per_trade_max_loss_pct ?? 0.08);
+  if (cfgDailyConsecLossEl) cfgDailyConsecLossEl.value = Number(commonParams.daily_max_consecutive_losses ?? 3);
 }
 
 function openCommonConfigModal() {
@@ -203,8 +201,9 @@ function openCommonConfigModal() {
 
 async function saveCommonConfig() {
   const payload = {
-    daily_max_loss_enabled: String(cfgDailyLossEnabledEl?.value || 'true') === 'true',
-    daily_max_loss_amount: Number(cfgDailyLossAmountEl?.value || 0),
+    daily_max_loss_pct: Number(cfgDailyLossPctEl?.value || 0),
+    per_trade_max_loss_pct: Number(cfgPerTradeLossPctEl?.value || 0),
+    daily_max_consecutive_losses: Number(cfgDailyConsecLossEl?.value || 0),
   };
   const res = await fetch('/api/common-params', {
     method: 'POST',
@@ -247,7 +246,7 @@ async function switchEngineAndRefresh() {
     alert(`切换引擎失败: ${e.message}`);
   } finally {
     switchEngineBtn.disabled = false;
-    switchEngineBtn.textContent = '切换引擎并刷新';
+    switchEngineBtn.textContent = '切换引擎';
   }
 }
 
@@ -297,7 +296,7 @@ async function switchDatasetAndRefresh() {
     alert(`切换失败: ${e.message}`);
   } finally {
     switchDatasetBtn.disabled = false;
-    switchDatasetBtn.textContent = '切换并刷新';
+    switchDatasetBtn.textContent = '刷新';
   }
 }
 
