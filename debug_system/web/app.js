@@ -22,11 +22,20 @@ const STRUCT_RELAXED_MODE = false; // 与EA默认保持一致：严格结构判�
 const INITIAL_BALANCE = 1000;
 const MAIN_MARGIN_LEFT = 50;
 const MAIN_MARGIN_RIGHT = 20;
+const PLAY_INTERVAL_MS = 1000;
+const PLAY_WINDOW_BARS = 21;
+const PLAY_HALF_WINDOW = Math.floor(PLAY_WINDOW_BARS / 2);
+const CORNER_EQUAL_TOLERANCE = 0.10; // 对齐 run_plan02_backtest.py 默认 tol_price=0.10
 let currentPxPerBar = BASE_PX_PER_BAR;
 let syncMiniRelayout = false;
 let lastSelectAt = 0;
 let scrollRaf = 0;
 let barIndexByTime = new Map();
+let signalContextTimeline = [];
+let playbackTraceIndices = {};
+let playbackTimer = null;
+let playbackIndex = 0;
+let playbackPlaying = false;
 
 function barX(i) {
   return i;
@@ -58,6 +67,11 @@ const dailyListTableEl = document.getElementById('dailyListTable');
 const tradeListTableEl = document.getElementById('tradeListTable');
 const tradeListTitleEl = document.getElementById('tradeListTitle');
 const openCommonConfigBtn = document.getElementById('openCommonConfigBtn');
+const playToggleBtn = document.getElementById('playToggleBtn');
+const playSpeedEl = document.getElementById('playSpeed');
+const playProgressEl = document.getElementById('playProgress');
+const playTimeLabelEl = document.getElementById('playTimeLabel');
+const signalContextInfoEl = document.getElementById('signalContextInfo');
 
 const modeBarBtn = document.getElementById('modeBarBtn');
 const modeRangeBtn = document.getElementById('modeRangeBtn');
@@ -108,6 +122,7 @@ async function fetchJsonNoCache(url) {
 }
 
 function resetBehaviorViews(statusText = '行为数据已清空，等待重新加载...') {
+  stopPlayback();
   trades = [];
   tradePnlList = [];
   dailyPnlList = [];
@@ -118,8 +133,19 @@ function resetBehaviorViews(statusText = '行为数据已清空，等待重新�
   tradeRangeInitialized = false;
   lastValidTradeFrom = '';
   lastValidTradeTo = '';
+  signalContextTimeline = [];
+  playbackTraceIndices = {};
+  playbackIndex = 0;
+  playbackPlaying = false;
   if (tradeDateFromEl) tradeDateFromEl.value = '';
   if (tradeDateToEl) tradeDateToEl.value = '';
+  if (playProgressEl) {
+    playProgressEl.min = '0';
+    playProgressEl.max = '0';
+    playProgressEl.value = '0';
+  }
+  if (playTimeLabelEl) playTimeLabelEl.textContent = '--';
+  if (signalContextInfoEl) signalContextInfoEl.textContent = '未开始播放';
   currentBuildId = '';
   if (flowListEl) {
     flowListEl.innerHTML = `<div class="logItem"><div class="m">${statusText}</div></div>`;
@@ -162,6 +188,281 @@ function inferBucketFromFileName(name) {
 function bucketLabel(bucket) {
   const m = { year: '年', month: '月', week: '周', day: '日' };
   return m[bucket] || bucket;
+}
+
+function formatCorner(c) {
+  if (!c) return 'none';
+  return `t=${c.time} right_idx=${c.rightIndex} top=${fmtNum(c.top, 2)} shadow=${fmtNum(c.shadow, 2)}`;
+}
+
+function detectCornerAt(i) {
+  const left = i - 2;
+  const right = i - 1;
+  if (left < 0 || right < 0 || i >= bars.length) return null;
+  const bl = bars[left];
+  const br = bars[right];
+  const closeL = Number(bl.close);
+  const openL = Number(bl.open);
+  const highL = Number(bl.high);
+  const lowL = Number(bl.low);
+  const closeR = Number(br.close);
+  const openR = Number(br.open);
+  const highR = Number(br.high);
+  const lowR = Number(br.low);
+  if (!Number.isFinite(closeL) || !Number.isFinite(openR)) return null;
+  if (Math.abs(closeL - openR) > CORNER_EQUAL_TOLERANCE) return null;
+
+  const leftBull = closeL > openL;
+  const leftBear = closeL < openL;
+  const rightBull = closeR > openR;
+  const rightBear = closeR < openR;
+  const top = closeL;
+
+  if (leftBull && rightBear) {
+    return {
+      valid: true,
+      direct: 1,
+      time: bars[right].time,
+      rightIndex: right,
+      top,
+      shadow: Math.max(highL, highR),
+    };
+  }
+  if (leftBear && rightBull) {
+    return {
+      valid: true,
+      direct: 0,
+      time: bars[right].time,
+      rightIndex: right,
+      top,
+      shadow: Math.min(lowL, lowR),
+    };
+  }
+  return null;
+}
+
+function isIntersectionAt(i) {
+  if (i <= 0 || i >= bars.length) return false;
+  // 最新 Plan02 口径：intersection 使用 EMA5/EMA20 交叉
+  const e50 = Number(bars[i - 1].ema5);
+  const e200 = Number(bars[i - 1].ema20);
+  const e51 = Number(bars[i].ema5);
+  const e201 = Number(bars[i].ema20);
+  if (!Number.isFinite(e50) || !Number.isFinite(e200) || !Number.isFinite(e51) || !Number.isFinite(e201)) return false;
+  const d0 = e50 - e200;
+  const d1 = e51 - e201;
+  return (d0 * d1) < 0;
+}
+
+function buildSignalContextTimeline() {
+  signalContextTimeline = new Array(bars.length);
+  let soloUp = null;
+  let soloDown = null;
+  for (let i = 0; i < bars.length; i++) {
+    const corner = detectCornerAt(i);
+    if (corner && corner.valid) {
+      if (corner.direct === 1) soloUp = corner;
+      if (corner.direct === 0) soloDown = corner;
+    }
+    signalContextTimeline[i] = {
+      index: i,
+      time: bars[i].time,
+      intersection: isIntersectionAt(i),
+      corner: corner || null,
+      has_solo_up: !!soloUp,
+      solo_up: soloUp ? { ...soloUp } : null,
+      has_solo_down: !!soloDown,
+      solo_down: soloDown ? { ...soloDown } : null,
+    };
+  }
+}
+
+function getPlaybackContext(i) {
+  if (!signalContextTimeline.length) return null;
+  const idx = Math.max(0, Math.min(signalContextTimeline.length - 1, i));
+  return signalContextTimeline[idx];
+}
+
+function getPlaybackLineSegment(i, price) {
+  const x0 = Math.max(0, i - PLAY_HALF_WINDOW);
+  const x1 = Math.min(bars.length - 1, i + PLAY_HALF_WINDOW);
+  if (!Number.isFinite(price) || x1 < x0) return { x: [], y: [] };
+  return { x: [barX(x0), barX(x1)], y: [price, price] };
+}
+
+function buildPlaybackTraces(i) {
+  const ctx = getPlaybackContext(i);
+  const upShadowSeg = ctx?.has_solo_up ? getPlaybackLineSegment(i, Number(ctx.solo_up.shadow)) : { x: [], y: [] };
+  const upTopSeg = ctx?.has_solo_up ? getPlaybackLineSegment(i, Number(ctx.solo_up.top)) : { x: [], y: [] };
+  const downShadowSeg = ctx?.has_solo_down ? getPlaybackLineSegment(i, Number(ctx.solo_down.shadow)) : { x: [], y: [] };
+  const downTopSeg = ctx?.has_solo_down ? getPlaybackLineSegment(i, Number(ctx.solo_down.top)) : { x: [], y: [] };
+
+  const ix = [];
+  const iy = [];
+  const itext = [];
+  const yPadBase = ((globalYRange[1] - globalYRange[0]) * 0.02) || 1;
+  for (let j = 0; j <= i && j < signalContextTimeline.length; j++) {
+    if (!signalContextTimeline[j].intersection) continue;
+    const bh = Number(bars[j].high);
+    const bl = Number(bars[j].low);
+    const y = bh + Math.max(yPadBase, (bh - bl) * 0.3);
+    ix.push(barX(j));
+    iy.push(y);
+    itext.push('⊗');
+  }
+
+  const currentBar = bars[Math.max(0, Math.min(bars.length - 1, i))] || {};
+  return {
+    upShadow: upShadowSeg,
+    upTop: upTopSeg,
+    downShadow: downShadowSeg,
+    downTop: downTopSeg,
+    intersection: { x: ix, y: iy, text: itext },
+    nowMarker: {
+      x: [barX(i)],
+      y: [Number(currentBar.close) || 0],
+      text: [currentBar.time || ''],
+    },
+  };
+}
+
+function buildPlaybackShape() {
+  if (!bars.length || playbackIndex < 0 || playbackIndex >= bars.length) return null;
+  const x = barX(playbackIndex);
+  return {
+    type: 'line',
+    xref: 'x',
+    yref: 'paper',
+    x0: x,
+    x1: x,
+    y0: 0,
+    y1: 1,
+    line: { color: 'rgba(255,255,255,0.75)', width: 1.5, dash: 'dot' },
+    layer: 'above',
+  };
+}
+
+function buildPlaybackAnnotations() {
+  if (!bars.length || playbackIndex < 0 || playbackIndex >= bars.length) return [];
+  const b = bars[playbackIndex];
+  const yPad = ((globalYRange[1] - globalYRange[0]) * 0.04) || 1;
+  return [{
+    x: barX(playbackIndex),
+    y: Number(b.high) + yPad,
+    xref: 'x',
+    yref: 'y',
+    text: `▶ ${b.time}`,
+    showarrow: true,
+    arrowhead: 2,
+    arrowsize: 1,
+    arrowwidth: 1,
+    arrowcolor: '#f8fafc',
+    ax: 0,
+    ay: -24,
+    font: { color: '#f8fafc', size: 11 },
+    bgcolor: 'rgba(15,23,42,0.85)',
+    bordercolor: 'rgba(248,250,252,0.35)',
+    borderwidth: 1,
+  }];
+}
+
+function renderSignalContextInfo(i) {
+  if (!signalContextInfoEl || !bars.length) return;
+  const idx = Math.max(0, Math.min(bars.length - 1, i));
+  const b = bars[idx];
+  const ctx = getPlaybackContext(idx);
+  const cornerText = ctx?.corner
+    ? `direct=${ctx.corner.direct === 1 ? 'solo_up' : 'solo_down'} top=${fmtNum(ctx.corner.top, 2)} shadow=${fmtNum(ctx.corner.shadow, 2)}`
+    : 'none';
+  signalContextInfoEl.textContent = [
+    `play_index: ${idx}/${Math.max(0, bars.length - 1)}`,
+    `time: ${b.time}`,
+    `corner_tol: ${CORNER_EQUAL_TOLERANCE.toFixed(2)}`,
+    `intersection: ${ctx?.intersection ? 'true (⊗)' : 'false'}`,
+    `corner(new): ${cornerText}`,
+    `g_solo_up: ${formatCorner(ctx?.solo_up)}`,
+    `g_solo_down: ${formatCorner(ctx?.solo_down)}`,
+  ].join('\n');
+}
+
+function updatePlayLabel() {
+  if (!playTimeLabelEl || !bars.length) return;
+  const i = Math.max(0, Math.min(bars.length - 1, playbackIndex));
+  playTimeLabelEl.textContent = `${bars[i].time} (${i + 1}/${bars.length})`;
+}
+
+function getPlayIntervalMs() {
+  const sec = Number(playSpeedEl?.value || 1);
+  if (!Number.isFinite(sec) || sec <= 0) return PLAY_INTERVAL_MS;
+  return Math.round(sec * 1000);
+}
+
+function updatePlaybackTracesAndOverlay() {
+  if (!chartEl || !chartEl.data || !bars.length) return;
+  const t = buildPlaybackTraces(playbackIndex);
+  const idxs = playbackTraceIndices;
+  if (Number.isFinite(idxs.upShadow)) {
+    Plotly.restyle(chartEl, { x: [t.upShadow.x], y: [t.upShadow.y] }, [idxs.upShadow]);
+    Plotly.restyle(chartEl, { x: [t.upTop.x], y: [t.upTop.y] }, [idxs.upTop]);
+    Plotly.restyle(chartEl, { x: [t.downShadow.x], y: [t.downShadow.y] }, [idxs.downShadow]);
+    Plotly.restyle(chartEl, { x: [t.downTop.x], y: [t.downTop.y] }, [idxs.downTop]);
+    Plotly.restyle(chartEl, { x: [t.intersection.x], y: [t.intersection.y], text: [t.intersection.text] }, [idxs.intersection]);
+    Plotly.restyle(chartEl, { x: [t.nowMarker.x], y: [t.nowMarker.y], text: [t.nowMarker.text] }, [idxs.nowMarker]);
+  }
+  Plotly.relayout(chartEl, {
+    shapes: buildAllShapes(),
+    annotations: buildAllAnnotations(),
+  });
+}
+
+function renderPlaybackFrame(center = true) {
+  if (!bars.length) return;
+  playbackIndex = Math.max(0, Math.min(bars.length - 1, playbackIndex));
+  if (playProgressEl) playProgressEl.value = String(playbackIndex);
+  updatePlayLabel();
+  renderSignalContextInfo(playbackIndex);
+  selectedIndex = playbackIndex;
+  if (center) {
+    centerOnIndex(playbackIndex);
+  } else {
+    if (infoEl) infoEl.textContent = fmtBar(bars[playbackIndex], playbackIndex);
+  }
+  updatePlaybackTracesAndOverlay();
+}
+
+function stopPlayback() {
+  if (playbackTimer) {
+    clearInterval(playbackTimer);
+    playbackTimer = null;
+  }
+  playbackPlaying = false;
+  if (playToggleBtn) playToggleBtn.textContent = '播放';
+}
+
+function startPlayback() {
+  if (!bars.length) return;
+  if (playbackIndex >= bars.length - 1) playbackIndex = 0;
+  stopPlayback();
+  playbackPlaying = true;
+  if (playToggleBtn) playToggleBtn.textContent = '暂停';
+  const intervalMs = getPlayIntervalMs();
+  playbackTimer = setInterval(() => {
+    if (playbackIndex >= bars.length - 1) {
+      stopPlayback();
+      return;
+    }
+    playbackIndex += 1;
+    renderPlaybackFrame(true);
+  }, intervalMs);
+}
+
+function togglePlayback() {
+  if (!bars.length) return;
+  if (playbackPlaying) {
+    stopPlayback();
+  } else {
+    startPlayback();
+  }
 }
 
 function renderEngineFiles(preferredFile = null) {
@@ -303,6 +604,7 @@ async function switchDatasetAndRefresh() {
 async function fullRefreshAfterSwitch() {
   resetBehaviorViews('正在加载新行为数据源...');
   await loadData();
+  playbackIndex = 0;
   computeGlobalYRange();
   renderPending();
   renderLogs();
@@ -313,6 +615,7 @@ async function fullRefreshAfterSwitch() {
   renderTradeExplorer();
   buildChart();
   buildMiniChart();
+  renderPlaybackFrame(true);
 }
 
 function reasonLabel(code) {
@@ -553,8 +856,14 @@ function buildSelectionShape() {
 function buildAllShapes() {
   const shapes = buildRangeShapes();
   const sel = buildSelectionShape();
+  const play = buildPlaybackShape();
   if (sel) shapes.push(sel);
+  if (play) shapes.push(play);
   return shapes;
+}
+
+function buildAllAnnotations() {
+  return buildPlaybackAnnotations();
 }
 
 function computeFlowEvents() {
@@ -959,7 +1268,7 @@ function focusBarIndex(idx) {
     infoEl.textContent = fmtBar(bars[idx], idx);
   }
   if (chartEl && chartEl.data) {
-    Plotly.relayout(chartEl, { shapes: buildAllShapes() });
+    Plotly.relayout(chartEl, { shapes: buildAllShapes(), annotations: buildAllAnnotations() });
   }
 }
 
@@ -1353,6 +1662,73 @@ function buildChart() {
     ...buildTradeTraces(),
     buildCommentTrace(),
   ];
+  const playbackTraces = buildPlaybackTraces(playbackIndex);
+  playbackTraceIndices = {
+    upShadow: traces.length,
+    upTop: traces.length + 1,
+    downShadow: traces.length + 2,
+    downTop: traces.length + 3,
+    intersection: traces.length + 4,
+    nowMarker: traces.length + 5,
+  };
+  traces.push(
+    {
+      x: playbackTraces.upShadow.x,
+      y: playbackTraces.upShadow.y,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'g_solo_up.shadow',
+      line: { color: '#f97316', width: 2, dash: 'dot' },
+      hovertemplate: 'g_solo_up.shadow=%{y:.2f}<extra></extra>',
+    },
+    {
+      x: playbackTraces.upTop.x,
+      y: playbackTraces.upTop.y,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'g_solo_up.top',
+      line: { color: '#f97316', width: 2 },
+      hovertemplate: 'g_solo_up.top=%{y:.2f}<extra></extra>',
+    },
+    {
+      x: playbackTraces.downShadow.x,
+      y: playbackTraces.downShadow.y,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'g_solo_down.shadow',
+      line: { color: '#facc15', width: 2, dash: 'dot' },
+      hovertemplate: 'g_solo_down.shadow=%{y:.2f}<extra></extra>',
+    },
+    {
+      x: playbackTraces.downTop.x,
+      y: playbackTraces.downTop.y,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'g_solo_down.top',
+      line: { color: '#facc15', width: 2 },
+      hovertemplate: 'g_solo_down.top=%{y:.2f}<extra></extra>',
+    },
+    {
+      x: playbackTraces.intersection.x,
+      y: playbackTraces.intersection.y,
+      text: playbackTraces.intersection.text,
+      type: 'scatter',
+      mode: 'text',
+      name: 'intersection',
+      textfont: { color: '#fde047', size: 16, family: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+      hovertemplate: 'intersection ⊗<extra></extra>',
+    },
+    {
+      x: playbackTraces.nowMarker.x,
+      y: playbackTraces.nowMarker.y,
+      text: playbackTraces.nowMarker.text,
+      type: 'scatter',
+      mode: 'markers',
+      name: '当前播放K',
+      marker: { color: '#ffffff', size: 7, symbol: 'circle', line: { color: '#0f172a', width: 1.1 } },
+      hovertemplate: '当前K: %{text}<extra></extra>',
+    },
+  );
 
   const layout = {
     paper_bgcolor: '#0b0e14',
@@ -1378,6 +1754,7 @@ function buildChart() {
     },
     margin: { l: MAIN_MARGIN_LEFT, r: MAIN_MARGIN_RIGHT, t: 20, b: 40 },
     shapes: buildAllShapes(),
+    annotations: buildAllAnnotations(),
     legend: { orientation: 'h', y: 1.08, x: 0 },
   };
 
@@ -1456,6 +1833,7 @@ async function saveToPending() {
     comment: text,
   };
 
+  let saved = null;
   try {
     const res = await fetch('/api/comments', {
       method: 'POST',
@@ -1467,7 +1845,7 @@ async function saveToPending() {
       alert(`保存失败: ${res.error || ''}`);
       return;
     }
-    const saved = res.item || item;
+    saved = res.item || item;
     pending.push(saved);
     comments.push(saved);
   } catch (e) {
@@ -1484,6 +1862,32 @@ async function saveToPending() {
   renderFlowList();
   if (chartEl && chartEl.data) {
     buildChart();
+    // 保存后回到评论对应区域：单K跳到该K，区间跳到中点K
+    let targetIdx = null;
+    if (saved && saved.mode === 'range') {
+      const s = Number(saved.start_index);
+      const e = Number(saved.end_index);
+      if (Number.isFinite(s) && Number.isFinite(e)) {
+        targetIdx = Math.round((Math.min(s, e) + Math.max(s, e)) / 2);
+      } else {
+        const si = barIndexByTime.get(toTime(saved.start_time || ''));
+        const ei = barIndexByTime.get(toTime(saved.end_time || ''));
+        if (Number.isFinite(si) && Number.isFinite(ei)) {
+          targetIdx = Math.round((Math.min(si, ei) + Math.max(si, ei)) / 2);
+        }
+      }
+    } else if (saved) {
+      const bi = Number(saved.bar_index);
+      if (Number.isFinite(bi)) {
+        targetIdx = bi;
+      } else {
+        const ti = barIndexByTime.get(toTime(saved.bar_time || ''));
+        if (Number.isFinite(ti)) targetIdx = ti;
+      }
+    }
+    if (Number.isFinite(targetIdx)) {
+      focusBarIndex(Math.max(0, Math.min(bars.length - 1, targetIdx)));
+    }
   }
 }
 
@@ -1556,6 +1960,15 @@ async function loadData() {
 
   bars = (ohlcRes.data.rows || []).map(b => ({ ...b, time: toTime(b.time) }));
   barIndexByTime = new Map(bars.map((b, i) => [b.time, i]));
+  buildSignalContextTimeline();
+  playbackIndex = Math.max(0, Math.min(playbackIndex, Math.max(0, bars.length - 1)));
+  if (playProgressEl) {
+    playProgressEl.min = '0';
+    playProgressEl.max = String(Math.max(0, bars.length - 1));
+    playProgressEl.value = String(playbackIndex);
+  }
+  updatePlayLabel();
+  renderSignalContextInfo(playbackIndex);
   comments = commentsRes.items || [];
   pending = [...comments];
   trades = (tradesRes.data && tradesRes.data.trades) ? tradesRes.data.trades : [];
@@ -1619,6 +2032,23 @@ if (switchDatasetBtn) {
 if (switchEngineBtn) {
   switchEngineBtn.onclick = switchEngineAndRefresh;
 }
+if (playToggleBtn) {
+  playToggleBtn.onclick = togglePlayback;
+}
+if (playSpeedEl) {
+  playSpeedEl.onchange = () => {
+    if (playbackPlaying) {
+      startPlayback();
+    }
+  };
+}
+if (playProgressEl) {
+  playProgressEl.oninput = () => {
+    stopPlayback();
+    playbackIndex = Number(playProgressEl.value || 0);
+    renderPlaybackFrame(true);
+  };
+}
 if (openCommonConfigBtn) {
   openCommonConfigBtn.onclick = openCommonConfigModal;
 }
@@ -1641,6 +2071,7 @@ window.addEventListener('resize', () => {
   if (bars.length > 0) {
     buildChart();
     buildMiniChart();
+    renderPlaybackFrame(true);
   }
 });
 
@@ -1657,6 +2088,7 @@ window.addEventListener('resize', () => {
     renderTradeExplorer();
     buildChart();
     buildMiniChart();
+    renderPlaybackFrame(true);
   } catch (e) {
     if (dataMetaEl) dataMetaEl.textContent = `加载失败: ${e.message}`;
     console.error(e);

@@ -37,6 +37,13 @@ DEFAULT_COMMON_PARAMS = {
     'per_trade_max_loss_pct': 0.08,
     'daily_max_consecutive_losses': 3,
 }
+EXPLICIT_ENGINE_BACKTEST_MAP = {
+    'kline_plan01_ea.mq5': 'run_plan01_backtest.py',
+    'kline_plan02_ea.mq5': 'run_plan02_backtest.py',
+    'kline_plan02_ea_a.mq5': 'run_plan02_backtest.py',
+    'kline_plan02_ea_b.mq5': 'run_plan02_backtest.py',
+    'kline_base.mq5': 'run_plan02_backtest.py',
+}
 
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 if not LOG_FILE.exists():
@@ -171,6 +178,19 @@ def _engine_stem_from_name(file_name: str):
     return stem
 
 
+def _next_comment_seq(out_dir: Path) -> int:
+    max_seq = 0
+    for p in out_dir.glob('comments_*.jsonl'):
+        m = re.match(r'^comments_(\d+)\.jsonl$', p.name)
+        if not m:
+            continue
+        try:
+            max_seq = max(max_seq, int(m.group(1)))
+        except Exception:
+            pass
+    return max_seq + 1
+
+
 def archive_temp_comments(engine_file: str | None = None):
     items = read_comments()
     if len(items) == 0:
@@ -182,7 +202,8 @@ def archive_temp_comments(engine_file: str | None = None):
     engine_name = _engine_stem_from_name(engine_file)
     out_dir = BASE / 'logs' / engine_name
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_name = f"comments_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+    seq = _next_comment_seq(out_dir)
+    out_name = f"comments_{seq:04d}.jsonl"
     out_path = out_dir / out_name
     with out_path.open('w', encoding='utf-8') as f:
         for it in items:
@@ -263,6 +284,17 @@ def resolve_engine_backtest_module(engine_file_name: str):
     若不存在则回退到 run_survival_v3_backtest.py
     """
     candidates = []
+    mapping_rule = 'fallback'
+    engine_key = (engine_file_name or '').strip().lower()
+    explicit_script = EXPLICIT_ENGINE_BACKTEST_MAP.get(engine_key)
+    # Plan02 系列引擎统一映射到 run_plan02_backtest.py，避免误落到 survival fallback
+    if explicit_script is None and engine_key.startswith('kline_plan02_ea'):
+        explicit_script = 'run_plan02_backtest.py'
+
+    if explicit_script:
+        mapping_rule = 'explicit_map'
+        candidates.extend([DRIVER_DIR / explicit_script, DATA_ROOT / explicit_script])
+
     if engine_file_name.endswith('.py'):
         candidates.extend([DRIVER_DIR / engine_file_name, DATA_ROOT / engine_file_name])
     else:
@@ -313,7 +345,10 @@ def resolve_engine_backtest_module(engine_file_name: str):
             for fn in ('parse_data', 'indicators', 'run_backtest'):
                 if not hasattr(mod, fn):
                     raise RuntimeError(f'Backtest module missing "{fn}": {module_path}')
-            return mod, module_path
+            effective_rule = mapping_rule
+            if explicit_script:
+                effective_rule = 'explicit_map' if module_path.name.lower() == explicit_script.lower() else 'fallback'
+            return mod, module_path, effective_rule
         except Exception as e:
             errs.append(f'{module_path}: {e}')
             continue
@@ -324,7 +359,7 @@ def load_parser_module():
     eng = current_engine_meta() or {}
     eng_name = str(eng.get('file') or '')
     if eng_name:
-        mod, _ = resolve_engine_backtest_module(eng_name)
+        mod, _, _ = resolve_engine_backtest_module(eng_name)
         return mod
 
     # hard fallback
@@ -512,6 +547,7 @@ def build_trades_payload(
     source_file: Path,
     engine_file: str,
     engine_module_path: Path,
+    mapping_rule: str,
     run_backtest_func,
     build_id: str,
     common_params: dict,
@@ -521,19 +557,43 @@ def build_trades_payload(
         res = run_backtest_func(df, common_params)
     except TypeError:
         res = run_backtest_func(df)
-    res = apply_common_limits_to_result(res, common_params)
+    # KLine_* 引擎默认不做公共风控裁剪，避免与策略定义产生偏移
+    is_kline_engine = str(engine_file or '').lower().startswith('kline_')
+    force_apply_for_kline = bool(common_params.get('apply_common_limits_for_kline', False))
+    common_limits_applied = (not is_kline_engine) or force_apply_for_kline
+    if common_limits_applied:
+        res = apply_common_limits_to_result(res, common_params)
+
     trades = []
     for i, t in enumerate(res.get('trades', [])):
+        entry_price_raw = t.get('entry_price', t.get('entry'))
+        exit_price_raw = t.get('exit_price', t.get('exit'))
+        if entry_price_raw is None or exit_price_raw is None:
+            raise RuntimeError(f'trade missing entry/exit price fields: {t}')
         trades.append({
             'id': i + 1,
             'entry_time': pd.to_datetime(t['entry_time']).strftime('%Y-%m-%dT%H:%M:%S'),
             'exit_time': pd.to_datetime(t['exit_time']).strftime('%Y-%m-%dT%H:%M:%S'),
             'side': t['side'],
-            'entry_price': float(t['entry']),
-            'exit_price': float(t['exit']),
+            'entry_price': float(entry_price_raw),
+            'exit_price': float(exit_price_raw),
             'pnl': float(t['pnl']),
             'reason': str(t['reason']),
         })
+
+    summary_src = res.get('summary', {}) if isinstance(res.get('summary'), dict) else {}
+    bars_val = res.get('bars', summary_src.get('bars', len(df)))
+    if bars_val is None:
+        bars_val = len(df)
+    start_val = res.get('start', summary_src.get('start'))
+    if start_val is None and not df.empty and 'time' in df.columns:
+        start_val = df.iloc[0]['time']
+    end_val = res.get('end', summary_src.get('end'))
+    if end_val is None and not df.empty and 'time' in df.columns:
+        end_val = df.iloc[-1]['time']
+    signals_val = res.get('signals', summary_src.get('signals', {}))
+    gate_pass_val = res.get('gate_pass', summary_src.get('gate_pass', {}))
+    blocked_by_daily_loss_val = res.get('blocked_by_daily_loss', summary_src.get('blocked_by_daily_loss', 0))
 
     wins = sum(1 for t in trades if float(t['pnl']) > 0)
     losses = len(trades) - wins
@@ -590,16 +650,18 @@ def build_trades_payload(
     return {
         'summary': {
             'build_id': build_id,
-            'bars': int(res['bars']),
-            'start': str(res['start']),
-            'end': str(res['end']),
+            'bars': int(bars_val),
+            'start': str(start_val),
+            'end': str(end_val),
             'source_file': str(source_file),
             'engine_file': engine_file,
             'engine_module': str(engine_module_path),
+            'mapping_rule': mapping_rule,
+            'common_limits_applied': bool(common_limits_applied),
             'generated_at': generated_at,
             'filter_start': None,
-            'signals': res.get('signals', {}),
-            'gate_pass': res.get('gate_pass', {}),
+            'signals': signals_val,
+            'gate_pass': gate_pass_val,
             'trades': len(trades),
             'wins': int(wins),
             'losses': int(losses),
@@ -607,7 +669,7 @@ def build_trades_payload(
             'net_pnl': float(net_pnl),
             'final_balance': float(final_balance),
             'max_dd_pct': float(max_dd_pct),
-            'blocked_by_daily_loss': int(res.get('blocked_by_daily_loss', 0)),
+            'blocked_by_daily_loss': int(blocked_by_daily_loss_val),
             'common_params': common_params,
         },
         'trades': trades,
@@ -620,7 +682,7 @@ def rebuild_dataset(bucket: str, file_name: str, engine_file_name: str | None = 
     engine_name = engine_file_name or str((current_engine_meta() or {}).get('file') or '')
     if not engine_name:
         raise RuntimeError('No engine selected.')
-    engine_mod, engine_module_path = resolve_engine_backtest_module(engine_name)
+    engine_mod, engine_module_path, mapping_rule = resolve_engine_backtest_module(engine_name)
     common_params = read_common_params()
 
     build_id = uuid4().hex[:12]
@@ -646,7 +708,7 @@ def rebuild_dataset(bucket: str, file_name: str, engine_file_name: str | None = 
 
     ohlc_payload = build_ohlc_payload(df, src, engine_name, engine_module_path, build_id)
     trades_payload = build_trades_payload(
-        df, src, engine_name, engine_module_path, engine_mod.run_backtest, build_id, common_params
+        df, src, engine_name, engine_module_path, mapping_rule, engine_mod.run_backtest, build_id, common_params
     )
 
     DATA_FILE.write_text(json.dumps(ohlc_payload, ensure_ascii=False), encoding='utf-8')

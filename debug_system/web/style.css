@@ -26,6 +26,15 @@ header {
 header h1 { margin: 0; font-size: 18px; }
 .toolbar { display: flex; align-items: center; gap: 10px; color: var(--muted); flex-wrap: wrap; }
 .toolbar a { color: var(--accent); text-decoration: none; }
+.playTimeLabel {
+  min-width: 170px;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+#playProgress {
+  width: 220px;
+  accent-color: #f59e0b;
+}
 .toolbar select.mini {
   min-width: 92px;
 }

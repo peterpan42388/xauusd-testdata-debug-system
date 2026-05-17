@@ -25,6 +25,15 @@
       </select>
       <select id="datasetFile" class="mini compactSelect narrowSelect"></select>
       <button id="switchDatasetBtn" class="mini">刷新</button>
+      <button id="playToggleBtn" class="mini">播放</button>
+      <select id="playSpeed" class="mini">
+        <option value="1">1秒/根</option>
+        <option value="2">2秒/根</option>
+        <option value="5">5秒/根</option>
+        <option value="10">10秒/根</option>
+      </select>
+      <input id="playProgress" type="range" min="0" max="0" step="1" value="0" />
+      <span id="playTimeLabel" class="playTimeLabel">--</span>
       <button id="modeBarBtn" class="mini active">单K评论</button>
       <button id="modeRangeBtn" class="mini">区间评论</button>
       <button id="submitPendingTop" class="mini primary">提交评论(0)</button>
@@ -54,6 +63,11 @@
     </section>
 
     <aside id="sidePanel">
+      <div class="card">
+        <h3>实时播放 / SignalContext</h3>
+        <pre id="signalContextInfo">未开始播放</pre>
+      </div>
+
       <div class="card">
         <h3>当前选中</h3>
         <pre id="selectedInfo">未选择</pre>
